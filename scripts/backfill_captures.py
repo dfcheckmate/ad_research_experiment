@@ -2,7 +2,7 @@
 Backfill captures table from existing screenshot files on disk.
 
 Parses filenames of the form:
-    captures/<trial_id>/<proxy_identity>__<intent_profile>__<site>.png
+    out/captures/<trial_id>/<proxy_identity>__<intent_profile>__<site>.png
 
 Inserts one row per file into the `captures` table (skips duplicates via
 ON CONFLICT DO NOTHING on file_path once thea unique index exists).
@@ -20,9 +20,10 @@ import os
 import uuid
 from pathlib import Path
 
-from config import DB_URL
+from config import CAPTURES_DIR, DB_URL
 
-CAPTURES_ROOT = Path(__file__).parent / "captures"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+CAPTURES_ROOT = PROJECT_ROOT / CAPTURES_DIR
 USE_SQLITE = DB_URL.startswith("sqlite")
 SQLITE_PATH = DB_URL.removeprefix("sqlite:///") if USE_SQLITE else None
 
@@ -59,7 +60,7 @@ def collect_files() -> list[dict]:
             if not parsed:
                 print(f"[skip] unrecognised filename: {png}")
                 continue
-            relative_path = str(png.relative_to(Path(__file__).parent))
+            relative_path = str(png.relative_to(PROJECT_ROOT))
             try:
                 size_kb = png.stat().st_size // 1024
             except OSError:

@@ -2,8 +2,8 @@
 
 This repo's real workloads are:
 
-- `python src/experiment.py ...` (Playwright-based capture into DB + captures/)
-- `python src/analysis.py --output results/` (writes results/)
+- `python src/experiment.py ...` (Playwright-based capture into `out/ads.db` + `out/captures/`)
+- `python src/analysis.py --output out/results/` (writes `out/results/`)
 - `python -m pytest ...` (infrastructure tests)
 
 So the controller models tasks around those entrypoints and lets runners lease

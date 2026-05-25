@@ -74,9 +74,9 @@ PYEOF
 # ── Step 4: Analyse-only shortcut ────────────────────────────────────────────
 if $ANALYSE_ONLY; then
   info "Running analysis on existing data …"
-  mkdir -p results
-  "$PYTHON" src/analysis.py --output results/
-  info "Done. Results in $EXP_DIR/results/"
+  mkdir -p out/results
+  "$PYTHON" src/analysis.py --output out/results/
+  info "Done. Results in $EXP_DIR/out/results/"
   exit 0
 fi
 
@@ -129,13 +129,13 @@ PYEOF
 # ── Step 7: Run analysis ──────────────────────────────────────────────────────
 echo ""
 info "Running causal analysis …"
-mkdir -p results
-"$PYTHON" src/analysis.py --output results/
+mkdir -p out/results
+"$PYTHON" src/analysis.py --output out/results/
 
 echo ""
 info "═══════════════════════════════════════════════════"
 info "  Done."
-info "  Dataset  : $EXP_DIR/results/observations.csv"
-info "  Plots    : $EXP_DIR/results/*.png"
+info "  Dataset  : $EXP_DIR/out/results/observations.csv"
+info "  Plots    : $EXP_DIR/out/results/*.png"
 info "  Database : $(cd $EXP_DIR && "$PYTHON" -c "from src.config import DB_URL; print(DB_URL)")"
 info "═══════════════════════════════════════════════════"

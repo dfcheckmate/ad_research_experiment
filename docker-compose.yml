@@ -1,4 +1,5 @@
 services:
+  # ── MCP orchestration (existing) ────────────────────────────────────────────
   controller:
     build:
       context: .
@@ -31,9 +32,65 @@ services:
       - PROXY_RESIDENTIAL_2=${PROXY_RESIDENTIAL_2:-}
       - PROXY_RESIDENTIAL_3=${PROXY_RESIDENTIAL_3:-}
       - PROXY_IDENTITY_META_JSON=${PROXY_IDENTITY_META_JSON:-}
-      - PROXY_OREM_UT=${PROXY_OREM_UT:-}
-      - PROXY_BOSTON_MA=${PROXY_BOSTON_MA:-}
-      - PROXY_NYC_NY=${PROXY_NYC_NY:-}
+      - PROXY_NODE_1=${PROXY_NODE_1:-}
+      - PROXY_NODE_2=${PROXY_NODE_2:-}
+      - PROXY_NODE_3=${PROXY_NODE_3:-}
     volumes:
       - ./:/work/repo
       - ./mcp_config.yml:/work/mcp_config.yml:ro
+
+  # ── Experiment runner (standalone trial execution) ──────────────────────────
+  # Usage:
+  #   docker compose run --rm experiment                     # 10-trial smoke test
+  #   docker compose run --rm experiment --trials 200         # full 200-trial run
+  #   docker compose run --rm experiment --trials 50 --concurrency 1 --max-browsers 3
+  experiment:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - DB_URL=postgresql://researcher:research@postgres:5432/ad_research
+      - PROXY_MODE=${PROXY_MODE:-residential}
+      - PROXY_RESIDENTIAL_1=${PROXY_RESIDENTIAL_1}
+      - PROXY_RESIDENTIAL_2=${PROXY_RESIDENTIAL_2}
+      - PROXY_RESIDENTIAL_3=${PROXY_RESIDENTIAL_3}
+      - PROXY_NODE_1=${PROXY_NODE_1:-}
+      - PROXY_NODE_2=${PROXY_NODE_2:-}
+      - PROXY_NODE_3=${PROXY_NODE_3:-}
+      - PROXY_IDENTITY_META_JSON=${PROXY_IDENTITY_META_JSON}
+      - MPLBACKEND=Agg
+    volumes:
+      - ./out:/app/out          # DB + results persist across runs
+      - ./.env:/app/.env:ro     # credentials (read-only)
+    shm_size: "2gb"             # Chromium needs shared memory (default 64MB → crashes)
+    deploy:
+      resources:
+        limits:
+          memory: 8g            # prevent OOM on 16GB host
+    entrypoint: ["python", "src/experiment.py"]
+    command: ["--trials", "10", "--concurrency", "2", "--max-browsers", "6"]
+
+  # ── PostgreSQL (default — avoids SQLite lock contention during concurrent trials)
+  # Usage: DB_URL is set on the experiment service by default.
+  # To use SQLite instead, override: docker compose run --rm -e DB_URL=sqlite:///out/ads.db experiment
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ad_research
+      POSTGRES_USER: researcher
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-research}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U researcher -d ad_research"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  pgdata:

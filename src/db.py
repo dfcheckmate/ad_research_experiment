@@ -2,7 +2,7 @@
 Database layer — supports SQLite (default) and PostgreSQL.
 
 Backend is chosen by DB_URL in config:
-  sqlite:///ads.db    → SQLite  (default, zero extra config)
+  sqlite:///out/ads.db → SQLite  (default, zero extra config)
   postgresql://...    → PostgreSQL (asyncpg)
 """
 
@@ -17,7 +17,7 @@ from contextlib import asynccontextmanager
 try:
     from config import DB_URL as _CONFIG_DB_URL
 except Exception:  # pragma: no cover
-    _CONFIG_DB_URL = "sqlite:///ads.db"
+    _CONFIG_DB_URL = "sqlite:///out/ads.db"
 
 # Prefer the live environment value (tests monkeypatch this).
 DB_URL = os.getenv("DB_URL", _CONFIG_DB_URL)
@@ -36,6 +36,14 @@ def _sqlite_path(db_url: str | None = None) -> str:
     if not url.startswith("sqlite:///"):
         raise ValueError(f"Unsupported SQLite URL format: {url!r}")
     return url.removeprefix("sqlite:///")
+
+
+def _ensure_sqlite_parent(path: str) -> None:
+    if path == ":memory:":
+        return
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
 
 
 # ── SQLite schema ─────────────────────────────────────────────────────────────
@@ -251,6 +259,7 @@ async def _sqlite_init() -> None:
     import aiosqlite
 
     path = _sqlite_path()
+    _ensure_sqlite_parent(path)
     async with aiosqlite.connect(path) as conn:
         await conn.executescript(SQLITE_SCHEMA)
         await conn.executescript(SQLITE_CAPTURES_SCHEMA)

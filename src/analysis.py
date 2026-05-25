@@ -1,16 +1,22 @@
 """
 Causal Analysis
----------------
-Loads ad observations from PostgreSQL and estimates the causal effect of
-ZIP condition (treatment) on ad exposure.
+--------------
+Loads ad observations and estimates the causal effect of
+proxy identity (ZIP condition / household identity) on ad composition.
+
+Primary outcomes: ad-domain distribution, ad-network composition,
+platform-class mix, and diversity metrics (entropy, HHI, unique domains).
+
+Secondary (diagnostic): ad volume, used as balance check
+since measurement exposure is held approximately constant by design.
 
 Statistical models:
-  1. Logistic regression  – P(ad exposure | ZIP)
-  2. Chi-square test      – independence of ad domain × ZIP condition
-  3. Top-domain breakdown – which advertisers differ most across ZIP conditions
+  1. Logistic regression  - P(ad exposure | ZIP)
+  2. Chi-square test      - independence of ad domain x ZIP condition
+  3. Top-domain breakdown - which advertisers differ most across ZIP conditions
 
 Usage:
-    python analysis.py [--output results/]
+    python analysis.py [--output out/results/]
 """
 
 from __future__ import annotations
@@ -40,6 +46,11 @@ sns.set_theme(style="whitegrid")
 async def load_data() -> pd.DataFrame:
     if USE_SQLITE:
         import aiosqlite
+
+        # Ensure parent directory exists (e.g. in CI containers where out/ may not exist).
+        parent = os.path.dirname(SQLITE_PATH)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
 
         async with aiosqlite.connect(SQLITE_PATH) as conn:
             conn.row_factory = aiosqlite.Row
@@ -269,11 +280,13 @@ def classify_final_taxonomy(row: pd.Series) -> str:
 # ── Model 1 – Logistic regression: ZIP → ad exposure ─────────────────────────
 
 
-def logistic_regression(df: pd.DataFrame) -> None:
+def test_volume_hypothesis(df: pd.DataFrame) -> None:
     """
+    Volume is held approximately constant by design.
+    This model is a diagnostic/balance check, not the primary outcome.
+
     Poisson GLM: ad_count ~ C(zip_condition).
-    Works for any number of proxy identity levels (2 legacy or 3 residential).
-    The reference level is set to the alphabetically first identity label.
+    Tests H0-volume: ad volume is independent of proxy identity.
     """
     # Aggregate: one row per (trial × identity)
     agg = (
@@ -287,7 +300,7 @@ def logistic_regression(df: pd.DataFrame) -> None:
     ref = identities[0]  # alphabetical reference level
 
     print("\n" + "=" * 60)
-    print("MODEL 1 — Proxy identity effect on ad volume")
+    print("MODEL 1 — Volume (Balance Check)")
     print(f"          Reference level: {ref}")
     print("=" * 60)
 
@@ -328,6 +341,7 @@ def logistic_regression(df: pd.DataFrame) -> None:
 
 
 # ── Model 2 – Chi-square: ad domain × ZIP condition ──────────────────────────
+# Tests H0-domain: ad-domain distribution is independent of proxy identity.
 
 
 def chi_square_test(df: pd.DataFrame) -> None:
@@ -467,6 +481,15 @@ def summary_stats(df: pd.DataFrame) -> None:
         print(f"Source types       : {df['source_type'].value_counts().to_dict()}")
     if "intent_profile" in df:
         print(f"Intent profiles    : {df['intent_profile'].value_counts().to_dict()}")
+
+    # Diversity metrics for the whole dataset
+    import math
+    vc = df["ad_domain"].value_counts(normalize=True)
+    entropy = -sum(p * math.log(p) for p in vc if p > 0)
+    hhi = sum(p ** 2 for p in vc)
+    print(f"Domain entropy (Shannon): {entropy:.4f}")
+    print(f"Domain HHI (Herfindahl): {hhi:.4f}")
+    print(f"Unique domains per observation: {len(vc) / len(df):.4f}")
 
 
 def treatment_cell_summary(df: pd.DataFrame) -> None:
@@ -645,16 +668,19 @@ async def main(output_dir: str) -> None:
 
     df = preprocess(df)
 
+    # ── Composition outcomes (primary) ────────────────────────────────
     summary_stats(df)
     treatment_cell_summary(df)
     google_search_summary(df, output_dir)
     inferred_topic_summary(df, output_dir)
     final_taxonomy_summary(df, output_dir)
     cell_comparison_plot(df, output_dir)
-    logistic_regression(df)
-    chi_square_test(df)
+    chi_square_test(df)           # H0-domain: composition
     domain_breakdown(df, output_dir)
     per_domain_odds(df, output_dir)
+
+    # ── Volume (balance check / secondary) ──────────────────────────
+    test_volume_hypothesis(df)  # H0-volume: diagnostic only
 
     # Save processed dataset
     csv_path = os.path.join(output_dir, "observations.csv")
@@ -667,7 +693,7 @@ if __name__ == "__main__":
         description="Causal analysis of ad-targeting experiment"
     )
     parser.add_argument(
-        "--output", default="results", help="Directory for plots and CSV"
+        "--output", default="out/results", help="Directory for plots and CSV"
     )
     args = parser.parse_args()
 

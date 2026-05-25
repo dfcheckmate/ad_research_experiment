@@ -18,9 +18,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Database ──────────────────────────────────────────────────────────────────
-# Default: SQLite file in the project directory (zero extra config).
-# Override with a postgresql:// URL once you have PostgreSQL available.
-DB_URL = os.getenv("DB_URL", "sqlite:///ads.db")
+# Default: PostgreSQL (avoids SQLite lock contention during concurrent trials).
+# Override with a sqlite:// URL for local/dev: DB_URL=sqlite:///out/ads.db
+DB_URL = os.getenv("DB_URL", "postgresql://researcher:research@localhost:5432/ad_research")
 
 # ── Proxy mode ───────────────────────────────────────────────────────────────
 # residential | local | socks5 | upstream | upstream_mitm
@@ -42,17 +42,20 @@ UPSTREAM_PROXY = os.getenv("UPSTREAM_PROXY", None)
 # The URL scheme controls transport: http:// or socks5://
 # Format: http://user:pass@proxy-host:port or socks5://user:pass@proxy-host:port
 #
-# Default labels are generic to avoid implying geographic control when your
-# provider assigns endpoints opportunistically.
+# Labels are generic identity markers (res_1, res_2, res_3). Geographic
+# attribution is tracked separately via PROXY_IDENTITY_META_JSON and should
+# be verified periodically — residential proxy exit IPs can change.
 RESIDENTIAL_PROXY_DEFAULTS: dict[str, str] = {
-    "res_1": os.getenv("PROXY_RESIDENTIAL_1", "") or os.getenv("PROXY_OREM_UT", ""),
-    "res_2": os.getenv("PROXY_RESIDENTIAL_2", "") or os.getenv("PROXY_BOSTON_MA", ""),
-    "res_3": os.getenv("PROXY_RESIDENTIAL_3", "") or os.getenv("PROXY_NYC_NY", ""),
+    "res_1": os.getenv("PROXY_RESIDENTIAL_1", "") or os.getenv("PROXY_NODE_1", ""),
+    "res_2": os.getenv("PROXY_RESIDENTIAL_2", "") or os.getenv("PROXY_NODE_2", ""),
+    "res_3": os.getenv("PROXY_RESIDENTIAL_3", "") or os.getenv("PROXY_NODE_3", ""),
 }
 
 # Metadata for each proxy identity (optional; used for reporting only).
 # Set PROXY_IDENTITY_META_JSON to a JSON dict like:
-#   {"res_1": {"city": "...", "state": "..."}, "res_2": {...}, "res_3": {...}}
+#   {"res_1": {"city": "Amsterdam", "region": "North Holland", "country": "NL",
+#              "asn": "AS3356", "isp": "Level 3 Parent LLC", "exit_ip": "89.116.54.61"},
+#    "res_2": {...}, "res_3": {...}}
 _meta_raw = os.getenv("PROXY_IDENTITY_META_JSON", "")
 if _meta_raw:
     try:
@@ -347,7 +350,7 @@ CONCURRENCY = 2
 HEADLESS = True
 CAPTURE_SCREENSHOTS = os.getenv("CAPTURE_SCREENSHOTS", "1") == "1"
 CAPTURE_DOM_SNIPPETS = os.getenv("CAPTURE_DOM_SNIPPETS", "0") == "1"
-CAPTURES_DIR = os.getenv("CAPTURES_DIR", "captures")
+CAPTURES_DIR = os.getenv("CAPTURES_DIR", "out/captures")
 # ↑ Path is relative to PROJECT ROOT (not src/ directory)
 
 # ── Telemetry (debugging / QC) ───────────────────────────────────────────────
@@ -355,6 +358,8 @@ CAPTURES_DIR = os.getenv("CAPTURES_DIR", "captures")
 # cookie count, navigation failures) into the DB. This does not change what ads
 # are captured; it's for diagnosing rate limiting / blocking differences by proxy.
 ENABLE_TELEMETRY = os.getenv("ENABLE_TELEMETRY", "0") == "1"
+
+# ── Monitoring ────────────────────────────────────────────────────────────────
 
 # ── Google search measurement ────────────────────────────────────────────────
 ENABLE_GOOGLE_SEARCH_MEASUREMENT = (

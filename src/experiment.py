@@ -55,12 +55,14 @@ def _redact_proxy_url(url: str) -> str:
     except Exception:
         return "<proxy>"
 
-
 # Global semaphore — set in main() before workers start.
 _browser_sem: asyncio.Semaphore | None = None
+_VERBOSE = False  # set via --verbose flag
 
 
-# ── Single paired trial ───────────────────────────────────────────────────────
+def _short_id(trial_id: str) -> str:
+    """Return first 8 chars of trial UUID for readable logging."""
+    return trial_id[:8]
 
 
 async def run_trial(pool, trial_id: str) -> int:
@@ -70,6 +72,7 @@ async def run_trial(pool, trial_id: str) -> int:
     parallel (paired) within each profile, gated by _browser_sem to avoid
     RAM exhaustion.
     """
+    sid = _short_id(trial_id)
     measurement_sites = sites_for_trial(trial_id)
     trial_meta = {
         "paired_block_id": trial_id,
@@ -86,6 +89,8 @@ async def run_trial(pool, trial_id: str) -> int:
 
     # Sequential over intent profiles — keeps browser count bounded.
     for intent_profile in ACTIVE_INTENT_PROFILES:
+        if _VERBOSE:
+            tqdm.write(f"  [{sid}] ▶ {intent_profile} — launching {len(PROXIES)} proxies…")
 
         async def _run_one(label: str, url: str) -> list[dict]:
             async with _browser_sem:  # cap total Chromium processes
@@ -98,20 +103,31 @@ async def run_trial(pool, trial_id: str) -> int:
                     pool=pool,
                 )
 
-        tasks = [
-            _run_one(zip_label, proxy_url) for zip_label, proxy_url in PROXIES.items()
-        ]
+        proxy_runs = list(PROXIES.items())
+        tasks = [_run_one(zip_label, proxy_url) for zip_label, proxy_url in proxy_runs]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for r in results:
+
+        profile_obs = 0
+        for (zip_label, _proxy_url), r in zip(proxy_runs, results):
             if isinstance(r, Exception):
                 import traceback
 
                 print(
-                    f"[warn] trial {trial_id} / {intent_profile}: {type(r).__name__}: {r}"
+                    f"[warn] trial {trial_id} / {intent_profile} / {zip_label}: {type(r).__name__}: {r}"
                 )
                 traceback.print_exc()
             else:
+                profile_obs += len(r)
                 all_obs.extend(r)
+
+        if _VERBOSE:
+            tqdm.write(f"  [{sid}]   {intent_profile} — {profile_obs} ads collected")
+
+    if not all_obs:
+        raise RuntimeError(
+            f"trial {trial_id} completed with no observations; "
+            "check proxy, browser, and capture configuration"
+        )
 
     await db.insert_observations(pool, all_obs)
     return len(all_obs)
@@ -119,15 +135,37 @@ async def run_trial(pool, trial_id: str) -> int:
 
 # ── Worker pool ───────────────────────────────────────────────────────────────
 
+# Residential proxies can drop mid-trial. Retry with exponential backoff
+# before marking a trial as failed (0 observations).
+MAX_TRIAL_RETRIES = 2
+
 
 async def worker(queue: asyncio.Queue, pool, results: list[int]) -> None:
     while True:
         trial_id = await queue.get()
+        sid = _short_id(trial_id)
         try:
-            n = await run_trial(pool, trial_id)
-            results.append(n)
-        except Exception as e:
-            print(f"[error] trial {trial_id}: {e}")
+            for attempt in range(MAX_TRIAL_RETRIES + 1):
+                try:
+                    n = await run_trial(pool, trial_id)
+                    results.append(n)
+                    if _VERBOSE:
+                        tqdm.write(f"▶ [{sid}] trial complete — {n} total ads")
+                    break
+                except Exception as e:
+                    if attempt == MAX_TRIAL_RETRIES:
+                        print(
+                            f"[error] trial {trial_id} failed after "
+                            f"{MAX_TRIAL_RETRIES + 1} attempts: {e}"
+                        )
+                        results.append(0)
+                    else:
+                        backoff = 5 * (attempt + 1)
+                        print(
+                            f"[warn] trial {trial_id} attempt {attempt + 1} failed, "
+                            f"retrying in {backoff}s: {e}"
+                        )
+                        await asyncio.sleep(backoff)
         finally:
             queue.task_done()
 
@@ -204,8 +242,22 @@ async def main(n_trials: int, concurrency: int, max_browsers: int) -> None:
         proxy_mgr.stop()
 
     total_ads = sum(results)
+    if total_ads == 0:
+        raise RuntimeError(
+            "experiment completed without any ad observations; "
+            "not running analysis until capture is fixed"
+        )
+
     print(f"\n[done] {n_trials} trials complete. Total ad observations: {total_ads}")
-    print("[done] Run `python analysis.py` to generate the causal estimates.")
+    print("[done] Generate the causal estimates with:")
+    print(
+        "docker run --rm \\\n"
+        '  -v "$PWD/out:/out" \\\n'
+        "  --env-file .env \\\n"
+        "  -e DB_URL=sqlite:////out/ads.db \\\n"
+        "  ad-research-experiment:local \\\n"
+        "  src/analysis.py --output /out/results"
+    )
 
 
 if __name__ == "__main__":
@@ -223,11 +275,19 @@ if __name__ == "__main__":
         default=None,
         help="Hard cap on simultaneous Chromium processes (default: concurrency × proxies, max 6)",
     )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Show per-profile and per-trial progress details",
+    )
     args = parser.parse_args()
 
+    globals()["_VERBOSE"] = args.verbose
+
+    if args.verbose:
+        print("[experiment] verbose mode enabled — showing per-profile progress")
+
     n_proxies = len(PROXIES)
-    # Default: concurrency × proxies, capped at 6 to prevent OOM.
-    # On an 8 GB host use --max-browsers 3; on a 16 GB host ≤ 6 is safe.
     default_max = min(args.concurrency * n_proxies, 6)
     max_browsers = args.max_browsers if args.max_browsers is not None else default_max
 

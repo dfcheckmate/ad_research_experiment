@@ -14,12 +14,12 @@ runner:
 defaults:
   timeout_seconds: 3600
   artifacts:
-    # Keep defaults small. `captures/` can be huge; request it explicitly per task.
+    # Keep defaults small. `out/captures/` can be huge; request it explicitly per task.
     paths:
-      - results/
+      - out/results/
       - coverage.xml
       - htmlcov/
-      - ads.db
+      - out/ads.db
     include_stdout: true
     include_stderr: true
 

@@ -137,7 +137,7 @@ def _execute(task: dict[str, Any]) -> dict[str, Any]:
         f"finish task_id={task.get('task_id')} rc={proc.returncode} elapsed_s={finished_at - started_at:.1f}"
     )
 
-    # Artifacts: keep default small; captures/ can be huge.
+    # Artifacts: keep default small; out/captures/ can be huge.
     artifacts = task.get("artifacts") or {}
     rel_paths = artifacts.get("paths") or []
     if not rel_paths:

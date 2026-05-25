@@ -3,7 +3,7 @@
 Examples:
   python3 scripts/enqueue_experiment.py --small
   python3 scripts/enqueue_experiment.py --trials 3 --concurrency 2 --max-browsers 4
-  python3 scripts/enqueue_experiment.py --sites-per-trial 12 --db-url sqlite:///ads_trial.db
+  python3 scripts/enqueue_experiment.py --sites-per-trial 12 --db-url sqlite:///out/ads.db
 """
 
 from __future__ import annotations
@@ -56,7 +56,7 @@ def main() -> None:
     parser.add_argument("--concurrency", type=int, default=1)
     parser.add_argument("--max-browsers", type=int, default=2)
     parser.add_argument("--timeout-seconds", type=int, default=3600)
-    parser.add_argument("--db-url", default="sqlite:///ads.db")
+    parser.add_argument("--db-url", default="sqlite:///out/ads.db")
     parser.add_argument("--sites-per-trial", type=int)
     parser.add_argument("--screenshots", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--dom-snippets", action=argparse.BooleanOptionalAction, default=False)
@@ -74,8 +74,8 @@ def main() -> None:
         args.max_browsers = 1
         args.sites_per_trial = 3
         args.screenshots = False
-        if args.db_url == "sqlite:///ads.db":
-            args.db_url = "sqlite:///ads_small_trial.db"
+        if args.db_url == "sqlite:///out/ads.db":
+            args.db_url = "sqlite:///out/ads-small-trial.db"
 
     payload = json.dumps(build_task(args)).encode("utf-8")
     req = Request(args.controller, data=payload, headers={"content-type": "application/json"})

@@ -1,5 +1,6 @@
 # Keep Docker build context small and deterministic.
 .git/
+.env
 __pycache__/
 *.pyc
 .pytest_cache/
@@ -17,3 +18,5 @@ data/
 mcp_artifacts/
 node_modules/
 docs/_build/
+out/
+.opencode*/

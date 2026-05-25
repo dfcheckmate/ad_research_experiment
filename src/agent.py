@@ -78,10 +78,7 @@ _USER_AGENTS = [
 ]
 
 _TIMEZONES = [
-    "America/New_York",
-    "America/Chicago",
-    "America/Denver",
-    "America/Los_Angeles",
+    "Europe/Amsterdam",
 ]
 
 _LOCALES = ["en-US", "en-US", "en-US", "en-GB"]
@@ -263,7 +260,10 @@ def build_playwright_proxy_config(proxy_url: str) -> dict:
         return {"server": proxy_url}
 
     if not parsed.hostname or not parsed.port or not parsed.scheme:
-        raise ValueError(f"Invalid proxy URL: {proxy_url!r}")
+        raise ValueError(
+            f"Invalid proxy URL: {proxy_url!r}. "
+            f"Set PROXY_MODE=local (no proxy) or provide valid proxy credentials in .env"
+        )
 
     server = f"{parsed.scheme}://{parsed.hostname}:{parsed.port}"
     cfg: dict = {"server": server}
@@ -541,6 +541,20 @@ async def run_agent(
         await context.add_init_script(_STEALTH_JS)
 
         page: Page = await context.new_page()
+        request_context: dict[str, object | None] = {
+            "phase": None,
+            "measurement_site": None,
+            "captured": None,
+        }
+
+        def on_any_request(request):
+            url = request.url
+            is_ad = is_ad_request(url)
+            captured = request_context.get("captured")
+            if captured is not None and is_ad:
+                captured.append(url)
+
+        page.on("request", on_any_request)
 
         async def _record_visit(
             *,
@@ -581,6 +595,9 @@ async def run_agent(
         # identifiers. This makes intent profiles distinguishable to ad networks.
         warming_script = WARMING_URLS.get(intent_profile, [])
         for url in warming_script:
+            request_context.update(
+                {"phase": "warming", "measurement_site": None, "captured": None}
+            )
             try:
                 resp = await page.goto(
                     url, wait_until="domcontentloaded", timeout=30_000
@@ -592,7 +609,6 @@ async def run_agent(
                     final_url=(resp.url if resp is not None else page.url),
                 )
                 await page.wait_for_timeout(_jitter(WARMING_DWELL_MS))
-                # Light scroll to simulate engagement
                 try:
                     await page.evaluate(
                         "window.scrollTo({ top: document.body.scrollHeight * 0.3, behavior: 'smooth' })"
@@ -608,11 +624,14 @@ async def run_agent(
                     final_url=page.url,
                     error=e,
                 )
-                pass  # skip unreachable pages; don't abort trial
+                pass
 
         # ── 1. Behavioural conditioning ──────────────────────────────────────
         behavior_script = INTENT_PROFILES[intent_profile]
         for url in behavior_script:
+            request_context.update(
+                {"phase": "conditioning", "measurement_site": None, "captured": None}
+            )
             try:
                 resp = await page.goto(
                     url, wait_until="domcontentloaded", timeout=30_000
@@ -623,9 +642,7 @@ async def run_agent(
                     status_code=(resp.status if resp is not None else None),
                     final_url=(resp.url if resp is not None else page.url),
                 )
-                # Randomise dwell time ±20% to avoid uniform timing fingerprint
                 await page.wait_for_timeout(_jitter(DWELL_TIME_MS))
-                # Light human-like scroll on conditioning pages
                 try:
                     await page.evaluate(
                         "window.scrollTo({ top: document.body.scrollHeight * 0.4, behavior: 'smooth' })"
@@ -641,7 +658,7 @@ async def run_agent(
                     final_url=page.url,
                     error=e,
                 )
-                pass  # skip unreachable pages; don't abort trial
+                pass
 
         if ENABLE_GOOGLE_SEARCH_MEASUREMENT:
             observations.extend(
@@ -658,17 +675,13 @@ async def run_agent(
         sites = list(measurement_sites) if measurement_sites is not None else sites_for_trial(trial_id)
         for site in sites:
             captured: list[str] = []
+            request_context.update(
+                {"phase": "measurement", "measurement_site": site, "captured": captured}
+            )
             page_load_time_ms = None
             nav_status: int | None = None
             nav_final_url: str | None = None
             nav_error: Exception | None = None
-
-            def on_request(request, _site=site):
-                url = request.url
-                if is_ad_request(url):
-                    captured.append(url)
-
-            page.on("request", on_request)
 
             try:
                 resp = await page.goto(
@@ -708,7 +721,6 @@ async def run_agent(
                 nav_final_url = page.url
                 pass
 
-            page.remove_listener("request", on_request)
             await _record_visit(
                 phase="measurement",
                 target_url=site,
@@ -756,6 +768,11 @@ async def run_agent(
                     }
                 )
 
+            request_context.update(
+                {"phase": None, "measurement_site": None, "captured": None}
+            )
+
+        page.remove_listener("request", on_any_request)
         await browser.close()
 
     if ENABLE_TELEMETRY and pool is not None and visit_telemetry:
