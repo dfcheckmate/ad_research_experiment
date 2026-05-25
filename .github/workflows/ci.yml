@@ -1,0 +1,242 @@
+name: CI
+
+on:
+  push:
+    branches: [main, wip/*]
+    tags: ['*']
+  pull_request:
+    branches: [main]
+
+env:
+  PIP_CACHE_DIR: ${{ github.workspace }}/.cache/pip
+  PYTHONPATH: ${{ github.workspace }}/src
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  pytest:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run pytest with coverage
+        run: |
+          pytest -q --cov=src --cov-report=xml --cov-report=term-missing
+        env:
+          DB_URL: sqlite:///test.db
+          PROXY_MODE: local
+          CAPTURE_SCREENSHOTS: '0'
+          CAPTURE_DOM_SNIPPETS: '0'
+          ENABLE_GOOGLE_SEARCH_MEASUREMENT: '0'
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          files: ./coverage.xml
+          fail_ci_if_error: false
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: |
+            coverage.xml
+            htmlcov/
+            .coverage
+
+  mcp-validate:
+    name: Validate MCP Config
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          pip install -r controller/requirements.txt
+          pip install -r runner/requirements.txt
+          pip install ruamel.yaml
+
+      - name: Validate Python files
+        run: |
+          python -m py_compile controller/app.py runner/worker.py
+
+      - name: Validate JSON configs
+        run: |
+          python -c 'import json; json.load(open("mcp_task.json", "r", encoding="utf-8"))'
+          python -c 'import json; json.load(open("mcp_task_upstream.json", "r", encoding="utf-8"))'
+
+      - name: Validate YAML config
+        run: |
+          python -c 'from ruamel.yaml import YAML; YAML(typ="safe").load(open("mcp_config.yml", "r", encoding="utf-8"))'
+
+  mcp-docker-build:
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build experiment image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ad-research-experiment:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build controller image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: controller/Dockerfile
+          push: false
+          tags: mcp-controller:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build runner image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: runner/Dockerfile
+          push: false
+          tags: mcp-runner:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  experiment-image-test:
+    name: Test Docker Image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build experiment image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: ad-research-experiment:ci
+          cache-from: type=gha
+
+      - name: Run tests in container
+        run: |
+          docker run --rm ad-research-experiment:ci pytest -q
+
+  mcp-docker-push:
+    name: Push Docker Images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref_type == 'tag' || github.ref == 'refs/heads/main')
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner
+          tags: |
+            type=ref,event=tag
+            type=sha,prefix=
+            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build and push experiment image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push controller image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: controller/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build and push runner image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: runner/Dockerfile
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  sphinx:
+    name: Build Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r docs/requirements.txt
+
+      - name: Build Sphinx documentation
+        run: |
+          sphinx-build -b html docs docs/_build/html -q
+
+      - name: Upload documentation
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sphinx-docs
+          path: docs/_build/html/
