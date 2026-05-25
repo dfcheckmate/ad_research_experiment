@@ -1,0 +1,28 @@
+{
+  "kind": "experiment",
+  "repo": {
+    "path": "/work/repo"
+  },
+  "requires_tags": ["chromium"],
+  "env": {
+    "PROXY_MODE": "upstream",
+    "CAPTURE_SCREENSHOTS": "1",
+    "CAPTURE_DOM_SNIPPETS": "0",
+    "ENABLE_TELEMETRY": "1",
+    "DB_URL": "sqlite:///ads.db"
+  },
+  "timeout_seconds": 5400,
+  "artifacts": {
+    "paths": ["results/", "ads.db", "captures/"],
+    "include_stdout": true,
+    "include_stderr": true
+  },
+  "experiment": {
+    "trials": 1,
+    "concurrency": 1,
+    "max_browsers": 2
+  },
+  "analysis": null,
+  "pytest": null,
+  "callback_url": null
+}

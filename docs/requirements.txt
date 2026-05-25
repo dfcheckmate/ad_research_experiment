@@ -1,0 +1,4 @@
+# Docs-only dependencies (install into the same venv)
+sphinx==8.2.3
+myst-parser==4.0.1
+furo==2025.7.19

@@ -1,0 +1,94 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# Python / Virtual Environment
+# ═══════════════════════════════════════════════════════════════════════════
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.whl
+docs/
+# ═══════════════════════════════════════════════════════════════════════════
+# Environment & Secrets
+# ═══════════════════════════════════════════════════════════════════════════
+.env
+.env.*
+!.env.example
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Data & Results (large/generated files)
+# ═══════════════════════════════════════════════════════════════════════════
+captures/
+src/captures/
+data/captures/
+data/*.db
+data/*.sqlite3
+results/
+*.log
+*.db
+
+# Sphinx build output
+docs/_build/
+
+# Chrome net-export logs (can contain tokens/cookies)
+docs/*net-export*.json
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Documentation & Reference (local working files)
+# ═══════════════════════════════════════════════════════════════════════════
+docs/*.txt
+!docs/requirements.txt
+literature/*.pdf
+literature/*.aux
+literature/*.bbl
+literature/*.blg
+literature/*.log
+literature/*.out
+misc/*.json
+misc/*.csv
+misc/*.html
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Examples & Scraping Code (keep structure, ignore content)
+# ═══════════════════════════════════════════════════════════════════════════
+scraping_examples/
+
+# ═══════════════════════════════════════════════════════════════════════════
+# IDE & Editor
+# ═══════════════════════════════════════════════════════════════════════════
+.DS_Store
+.idea/
+*.iml
+*.sublime-project
+*.sublime-workspace
+.vscode/
+.devcontainer/
+
+# Local tooling
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+.claude/
+.codex/
+venv2/
+
+# Local scratch
+openai.py
+session-ses_*.md
+custom-agents/
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Proxies (sensitive)
+# ═══════════════════════════════════════════════════════════════════════════
+proxies/decodo/
+mcp_artifacts/
+mcp_task_residential.json
+opencode.json
+repository-cleanup-commit-map.txt
+scripts/cbs_pc4_extract.py
+cicd_artifacts/

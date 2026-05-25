@@ -1,0 +1,28 @@
+repo:
+  # Path to the repo root as seen by the runner container/process.
+  # In docker-compose we mount the repo at /work/repo.
+  default_path: /work/repo
+
+runner:
+  id: runner-local
+  # Used by controller leasing if tasks specify requires_tags.
+  tags:
+    - chromium
+    - python
+  poll_interval_seconds: 2
+
+defaults:
+  timeout_seconds: 3600
+  artifacts:
+    # Keep defaults small. `captures/` can be huge; request it explicitly per task.
+    paths:
+      - results/
+      - coverage.xml
+      - htmlcov/
+      - ads.db
+    include_stdout: true
+    include_stderr: true
+
+# Proxy configuration is owned by the repo and is driven via env vars.
+# For real egress separation (ads actually differ), prefer PROXY_MODE=upstream or
+# PROXY_MODE=residential and set the relevant proxy URLs in `.env`.

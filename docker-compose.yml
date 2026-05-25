@@ -1,0 +1,39 @@
+services:
+  controller:
+    build:
+      context: .
+      dockerfile: controller/Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - MCP_CONFIG_PATH=/app/mcp_config.yml
+    volumes:
+      - ./mcp_config.yml:/app/mcp_config.yml:ro
+
+  runner:
+    build:
+      context: .
+      dockerfile: runner/Dockerfile
+    depends_on:
+      - controller
+    environment:
+      - CONTROLLER_URL=http://controller:8000
+      - MCP_CONFIG_PATH=/work/mcp_config.yml
+      - REPO_ROOT=/work/repo
+      - RUNNER_ID=runner-local
+      # Pass-through proxy-related env vars from the host shell.
+      # (Avoid embedding credentials in mcp_task*.json when possible.)
+      - PROXY_MODE=${PROXY_MODE:-}
+      - PROXY_POOR=${PROXY_POOR:-}
+      - PROXY_RICH=${PROXY_RICH:-}
+      - UPSTREAM_PROXY=${UPSTREAM_PROXY:-}
+      - PROXY_RESIDENTIAL_1=${PROXY_RESIDENTIAL_1:-}
+      - PROXY_RESIDENTIAL_2=${PROXY_RESIDENTIAL_2:-}
+      - PROXY_RESIDENTIAL_3=${PROXY_RESIDENTIAL_3:-}
+      - PROXY_IDENTITY_META_JSON=${PROXY_IDENTITY_META_JSON:-}
+      - PROXY_OREM_UT=${PROXY_OREM_UT:-}
+      - PROXY_BOSTON_MA=${PROXY_BOSTON_MA:-}
+      - PROXY_NYC_NY=${PROXY_NYC_NY:-}
+    volumes:
+      - ./:/work/repo
+      - ./mcp_config.yml:/work/mcp_config.yml:ro
