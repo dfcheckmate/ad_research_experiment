@@ -1,6 +1,6 @@
 # Ad Delivery Measurement Platform
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 
 **Educational research project exploring distributed measurement infrastructure for algorithmic auditing.**
@@ -188,7 +188,7 @@ This tool is designed for **research purposes only**. Key principles:
 
 ## License
 
-MIT License — see [`LICENSE`](./LICENSE) for details.
+CC BY-NC 4.0 License — see [`LICENSE`](./LICENSE) for details.
 
 This is a **personal project** developed independently. Not affiliated with or endorsed by my employer.
 
