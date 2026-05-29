@@ -1,25 +1,4 @@
-"""
-Browser Agent
--------------
-A single stateless Playwright session that:
-1. Opens a fresh browser context (no cookies, no cache).
-2. Runs the behavioural conditioning script.
-3. Visits each measurement site and records all ad-network requests.
-4. Captures a screenshot (external API or Playwright fallback).
-5. Returns the list of ad observation dicts.
-
-Each run is completely independent → no feedback-loop contamination.
-
-Anti-detection measures applied
---------------------------------
-- Random UA from a pool of real Chrome/Firefox/Edge strings
-- Viewport jitter (±40px) per session
-- navigator.webdriver removed via JS injection
-- Randomised dwell-time jitter (±20%)
-- Human-like scroll on measurement pages
-- No ‘--ignore-certificate-errors’ (bot signal); cert handling via proxy instead
-- External screenshot APIs (when available) for rendering
-"""
+"""Playwright browser agent — warming, conditioning, measurement, ad capture."""
 
 from __future__ import annotations
 
@@ -34,7 +13,6 @@ from playwright.async_api import async_playwright, BrowserContext, Page
 from config import (
     AD_NETWORK_PATTERNS,
     ACTIVE_QUERY_TOPICS,
-    ACTIVE_INTENT_PROFILES,
     AD_DWELL_MS,
     CAPTURES_DIR,
     CAPTURE_DOM_SNIPPETS,
@@ -672,7 +650,11 @@ async def run_agent(
             )
 
         # ── 2. Measurement phase ─────────────────────────────────────────────
-        sites = list(measurement_sites) if measurement_sites is not None else sites_for_trial(trial_id)
+        sites = (
+            list(measurement_sites)
+            if measurement_sites is not None
+            else sites_for_trial(trial_id)
+        )
         for site in sites:
             captured: list[str] = []
             request_context.update(

@@ -12,6 +12,11 @@ import asyncio
 import os
 from contextlib import asynccontextmanager
 
+from logging_config import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
+
 # Keep DB_URL as a module-level knob so tests can monkeypatch `db.DB_URL`
 # without needing to reload the module.
 try:
@@ -97,6 +102,8 @@ CREATE TABLE IF NOT EXISTS ad_observations (
     screenshot_path  TEXT,
     dom_snippet      TEXT,
     page_load_time_ms INTEGER,
+    ad_rank          INTEGER,
+    ad_placement     TEXT,
     observed_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_obs_zip   ON ad_observations(zip_condition);
@@ -154,6 +161,8 @@ CREATE TABLE IF NOT EXISTS ad_observations (
     screenshot_path  TEXT,
     dom_snippet      TEXT,
     page_load_time_ms INTEGER,
+    ad_rank          INTEGER,
+    ad_placement     TEXT,
     observed_at      TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_obs_zip   ON ad_observations(zip_condition);
@@ -269,7 +278,7 @@ async def _sqlite_init() -> None:
             except Exception:
                 pass
         await conn.commit()
-    print(f"[db] SQLite schema ready → {path}")
+    logger.info("SQLite schema ready → %s", path)
 
 
 # ── Pool shim for SQLite ──────────────────────────────────────────────────────
@@ -311,7 +320,7 @@ async def init_db(pool) -> None:
         await conn.execute(PG_CAPTURES_SCHEMA)
         for sql in PG_MIGRATIONS:
             await conn.execute(sql)
-    print("[db] PostgreSQL schema ready")
+    logger.info("PostgreSQL schema ready")
 
 
 async def ensure_trial(pool, trial_id: str, meta: dict | None = None) -> None:
