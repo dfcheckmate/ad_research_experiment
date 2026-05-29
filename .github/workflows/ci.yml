@@ -12,9 +12,9 @@ env:
   PYTHONPATH: ${{ github.workspace }}/src
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
-  EXPERIMENT_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-  MCP_CONTROLLER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller
-  MCP_RUNNER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner
+  EXPERIMENT_IMAGE: ghcr.io/${{ github.repository }}
+  MCP_CONTROLLER_IMAGE: ghcr.io/${{ github.repository }}/controller
+  MCP_RUNNER_IMAGE: ghcr.io/${{ github.repository }}/runner
 
 jobs:
   pytest:
