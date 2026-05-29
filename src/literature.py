@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import sqlite3
-import sys
 import time
 from datetime import datetime
 
@@ -135,15 +133,19 @@ def _parse_result(r: dict) -> dict:
     authors_str = "; ".join(authors)
 
     year = r.get("publication_year")
-    venue = r.get("primary_location", {}).get("source", {}).get("display_name", "") or ""
+    venue = (
+        r.get("primary_location", {}).get("source", {}).get("display_name", "") or ""
+    )
     citation_count = r.get("cited_by_count", 0) or 0
 
     abstract = ""
     if "abstract_inverted_index" in r and r["abstract_inverted_index"]:
-        abstract = " ".join(sorted(
-            r["abstract_inverted_index"].keys(),
-            key=lambda k: min(r["abstract_inverted_index"][k])
-        ))
+        abstract = " ".join(
+            sorted(
+                r["abstract_inverted_index"].keys(),
+                key=lambda k: min(r["abstract_inverted_index"][k]),
+            )
+        )
 
     open_access_url = ""
     oa = r.get("open_access", {})
@@ -183,7 +185,9 @@ def _to_bibtex(parsed: dict) -> str:
 
 def cmd_search(args):
     logger.info('Searching OpenAlex: "%s"', args.query)
-    logger.info("limit=%d, year_from=%d, deep=%s", args.limit, args.year_from, args.deep)
+    logger.info(
+        "limit=%d, year_from=%d, deep=%s", args.limit, args.year_from, args.deep
+    )
     if OPENALEX_EMAIL:
         logger.info("Using polite pool with email: %s", OPENALEX_EMAIL)
 
@@ -304,8 +308,13 @@ def cmd_stats(args):
     cur = conn.cursor()
 
     total = cur.execute("SELECT COUNT(*) FROM literature_cache").fetchone()[0]
-    total_cites = cur.execute("SELECT SUM(citation_count) FROM literature_cache").fetchone()[0] or 0
-    year_range = cur.execute("SELECT MIN(year), MAX(year) FROM literature_cache").fetchone()
+    total_cites = (
+        cur.execute("SELECT SUM(citation_count) FROM literature_cache").fetchone()[0]
+        or 0
+    )
+    year_range = cur.execute(
+        "SELECT MIN(year), MAX(year) FROM literature_cache"
+    ).fetchone()
     queries = cur.execute(
         "SELECT query_tag, COUNT(*) as n FROM literature_cache GROUP BY query_tag ORDER BY n DESC"
     ).fetchall()

@@ -427,6 +427,8 @@ async def insert_observations(pool, rows: list[dict]) -> None:
             r.get("screenshot_path"),
             r.get("dom_snippet"),
             r.get("page_load_time_ms"),
+            r.get("ad_rank"),
+            r.get("ad_placement"),
         )
         for r in rows
     ]
@@ -436,8 +438,8 @@ async def insert_observations(pool, rows: list[dict]) -> None:
                (trial_id, agent_id, zip_condition, ad_url, ad_domain, ad_network, measurement_site,
                 source_type, intent_profile, query_topic, search_query, ad_headline, ad_description, advertiser_name,
                 landing_url, landing_domain, inferred_topic, page_title, page_url, screenshot_path, dom_snippet,
-                page_load_time_ms)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                page_load_time_ms, ad_rank, ad_placement)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             params,
         )
         return
@@ -447,8 +449,8 @@ async def insert_observations(pool, rows: list[dict]) -> None:
                (trial_id, agent_id, zip_condition, ad_url, ad_domain, ad_network, measurement_site,
                 source_type, intent_profile, query_topic, search_query, ad_headline, ad_description, advertiser_name,
                 landing_url, landing_domain, inferred_topic, page_title, page_url, screenshot_path, dom_snippet,
-                page_load_time_ms)
-               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)""",
+                page_load_time_ms, ad_rank, ad_placement)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)""",
             params,
         )
 

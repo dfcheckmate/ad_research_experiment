@@ -64,7 +64,14 @@ async def run_trial(pool, trial_id: str) -> int:
 
     all_obs: list[dict] = []
 
-    for intent_profile in ACTIVE_INTENT_PROFILES:
+    # Randomize intent profile execution order per trial to mitigate order effects
+    import random
+
+    intent_order = list(ACTIVE_INTENT_PROFILES)
+    random.shuffle(intent_order)
+    trial_meta["intent_execution_order"] = intent_order
+
+    for intent_profile in intent_order:
         if _VERBOSE:
             tqdm.write(f"[{sid}] {intent_profile} — launching {len(PROXIES)} proxies")
 
@@ -86,7 +93,14 @@ async def run_trial(pool, trial_id: str) -> int:
         profile_obs = 0
         for (zip_label, _proxy_url), r in zip(proxy_runs, results):
             if isinstance(r, Exception):
-                logger.warning("%s/%s/%s: %s: %s", trial_id, intent_profile, zip_label, type(r).__name__, r)
+                logger.warning(
+                    "%s/%s/%s: %s: %s",
+                    trial_id,
+                    intent_profile,
+                    zip_label,
+                    type(r).__name__,
+                    r,
+                )
                 traceback.print_exc()
             else:
                 profile_obs += len(r)
@@ -119,11 +133,22 @@ async def worker(queue: asyncio.Queue, pool, results: list[int]) -> None:
                     break
                 except Exception as e:
                     if attempt == MAX_TRIAL_RETRIES:
-                        logger.error("%s failed after %d attempts: %s", trial_id, MAX_TRIAL_RETRIES + 1, e)
+                        logger.error(
+                            "%s failed after %d attempts: %s",
+                            trial_id,
+                            MAX_TRIAL_RETRIES + 1,
+                            e,
+                        )
                         results.append(0)
                     else:
                         backoff = 5 * (attempt + 1)
-                        logger.warning("%s attempt %d failed, retry in %ds: %s", trial_id, attempt + 1, backoff, e)
+                        logger.warning(
+                            "%s attempt %d failed, retry in %ds: %s",
+                            trial_id,
+                            attempt + 1,
+                            backoff,
+                            e,
+                        )
                         await asyncio.sleep(backoff)
         finally:
             queue.task_done()
@@ -135,7 +160,9 @@ async def main(n_trials: int, concurrency: int, max_browsers: int) -> None:
     logger.info("max simultaneous Chromium processes = %d", max_browsers)
 
     use_local_proxies = PROXY_MODE in ("local", "upstream_mitm")
-    proxy_mgr = ProxyManager(upstream_proxy=UPSTREAM_PROXY) if use_local_proxies else None
+    proxy_mgr = (
+        ProxyManager(upstream_proxy=UPSTREAM_PROXY) if use_local_proxies else None
+    )
 
     if proxy_mgr:
         logger.info("proxy mode = %s — starting local mitmdump", PROXY_MODE)
@@ -162,11 +189,17 @@ async def main(n_trials: int, concurrency: int, max_browsers: int) -> None:
 
     logger.info(
         "%d trials × %d proxy identities × %d intent profiles, concurrency=%d, max_browsers=%d",
-        n_trials, len(PROXIES), len(ACTIVE_INTENT_PROFILES), concurrency, max_browsers
+        n_trials,
+        len(PROXIES),
+        len(ACTIVE_INTENT_PROFILES),
+        concurrency,
+        max_browsers,
     )
 
     results: list[int] = []
-    workers = [asyncio.create_task(worker(queue, pool, results)) for _ in range(concurrency)]
+    workers = [
+        asyncio.create_task(worker(queue, pool, results)) for _ in range(concurrency)
+    ]
 
     with tqdm(total=n_trials, desc="trials") as pbar:
         done = 0

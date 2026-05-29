@@ -34,7 +34,9 @@ def build_task(args: argparse.Namespace) -> dict:
         "env": env,
         "timeout_seconds": args.timeout_seconds,
         "artifacts": {
-            "paths": [args.db_url.removeprefix("sqlite:///" )] if args.db_url.startswith("sqlite:///") else [],
+            "paths": [args.db_url.removeprefix("sqlite:///")]
+            if args.db_url.startswith("sqlite:///")
+            else [],
             "include_stdout": True,
             "include_stderr": True,
         },
@@ -58,9 +60,15 @@ def main() -> None:
     parser.add_argument("--timeout-seconds", type=int, default=3600)
     parser.add_argument("--db-url", default="sqlite:///out/ads.db")
     parser.add_argument("--sites-per-trial", type=int)
-    parser.add_argument("--screenshots", action=argparse.BooleanOptionalAction, default=True)
-    parser.add_argument("--dom-snippets", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("--telemetry", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--screenshots", action=argparse.BooleanOptionalAction, default=True
+    )
+    parser.add_argument(
+        "--dom-snippets", action=argparse.BooleanOptionalAction, default=False
+    )
+    parser.add_argument(
+        "--telemetry", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument(
         "--small",
         action="store_true",
@@ -78,7 +86,9 @@ def main() -> None:
             args.db_url = "sqlite:///out/ads-small-trial.db"
 
     payload = json.dumps(build_task(args)).encode("utf-8")
-    req = Request(args.controller, data=payload, headers={"content-type": "application/json"})
+    req = Request(
+        args.controller, data=payload, headers={"content-type": "application/json"}
+    )
     with urlopen(req, timeout=15) as resp:
         print(resp.read().decode("utf-8"))
 

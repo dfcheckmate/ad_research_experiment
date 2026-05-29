@@ -36,10 +36,12 @@ def configure_logging() -> None:
         root.removeHandler(handler)
 
     handler = logging.StreamHandler(sys.stdout)
-    handler.setFormatter(logging.Formatter(
-        fmt="[%(levelname)s] %(name)s: %(message)s",
-        datefmt="%H:%M:%S",
-    ))
+    handler.setFormatter(
+        logging.Formatter(
+            fmt="[%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    )
     root.addHandler(handler)
 
     results = logging.getLogger(RESULTS_LOGGER_NAME)

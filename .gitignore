@@ -61,17 +61,11 @@ literature/*.out
 misc/*.json
 misc/*.csv
 misc/*.html
-
+data
 # ═══════════════════════════════════════════════════════════════════════════
 # Examples & Scraping Code (keep structure, ignore content)
 # ═══════════════════════════════════════════════════════════════════════════
-scraping_examples/
-
-# ═══════════════════════════════════════════════════════════════════════════
-# Tests (keep locally, don't push to remote)
-# ═══════════════════════════════════════════════════════════════════════════
-tests/
-
+scraping_examples
 # ═══════════════════════════════════════════════════════════════════════════
 # IDE & Editor
 # ═══════════════════════════════════════════════════════════════════════════
@@ -94,7 +88,7 @@ htmlcov/
 .codex/
 .opencode/
 venv2/
-
+.vscode
 # Local scratch
 openai.py
 session-ses_*.md
@@ -117,3 +111,4 @@ agents.lock
 .vscode/settings.json
 .opencode.backup.2026-05-13
 agent_prompt.txt
+scripts/migrate_sqlite_to_pg.py

@@ -1,0 +1,24 @@
+# Pre-commit configuration for ad_research_experiment
+# See https://pre-commit.com for usage
+
+default_stages: [pre-commit]
+
+repos:
+  # Ruff - Fast Python linter and formatter (using local installation)
+  - repo: local
+    hooks:
+      # Run the linter
+      - id: ruff-check
+        name: ruff-check
+        entry: ruff check --fix
+        language: system
+        types: [python]
+        # Exclude debug scripts and docs examples
+        exclude: ^tests/debug/|^docs/analysis_update_guide\.py$
+      # Run the formatter
+      - id: ruff-format
+        name: ruff-format
+        entry: ruff format
+        language: system
+        types: [python]
+        exclude: ^tests/debug/|^docs/analysis_update_guide\.py$

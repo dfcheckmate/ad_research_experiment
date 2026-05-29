@@ -8,19 +8,22 @@ import pytest
 def test_experiment_imports():
     """Test that experiment module imports successfully."""
     import experiment
+
     assert experiment is not None
 
 
 def test_global_semaphore_exists():
     """Test that browser semaphore is defined."""
     import experiment
-    
+
     # Before main() is called, should be None
     assert experiment._browser_sem is None or hasattr(experiment._browser_sem, "_value")
 
 
 @pytest.mark.asyncio
-async def test_run_trial_inserts_observations(sqlite_pool, mock_proxy_config, monkeypatch):
+async def test_run_trial_inserts_observations(
+    sqlite_pool, mock_proxy_config, monkeypatch
+):
     """run_trial should persist observations returned by agents."""
     import experiment
     import asyncio
@@ -99,7 +102,7 @@ async def test_worker_records_failed_trial(monkeypatch):
 def test_concurrency_defaults():
     """Test that concurrency parameters have sensible defaults."""
     import config
-    
+
     assert config.CONCURRENCY > 0
     assert config.CONCURRENCY <= 10, "Concurrency too high for memory safety"
 
@@ -107,19 +110,19 @@ def test_concurrency_defaults():
 def test_n_trials_positive():
     """Test that N_TRIALS is positive."""
     import config
-    
+
     assert config.N_TRIALS > 0
 
 
 def test_max_browsers_calculation():
     """Test max browsers calculation logic."""
     import config
-    
+
     # From experiment.py logic
     n_proxies = len(config.PROXIES)
     concurrency = config.CONCURRENCY
-    
+
     default_max = min(concurrency * n_proxies, 6)
-    
+
     assert default_max >= concurrency
     assert default_max <= 12, "Max browsers too high for typical system"

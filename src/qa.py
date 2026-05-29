@@ -14,16 +14,27 @@ configure_logging()
 logger = get_logger(__name__)
 
 _CAPTCHA_INDICATORS = [
-    "captcha", "recaptcha", "hcaptcha", "turnstile", "challenge",
-    "verify you are human", "security check", "access denied",
-    "please solve the challenge", "prove you are not a robot",
-    "unusual traffic", "automated requests", "rate limit exceeded",
+    "captcha",
+    "recaptcha",
+    "hcaptcha",
+    "turnstile",
+    "challenge",
+    "verify you are human",
+    "security check",
+    "access denied",
+    "please solve the challenge",
+    "prove you are not a robot",
+    "unusual traffic",
+    "automated requests",
+    "rate limit exceeded",
 ]
 
 _BLOCK_STATUS_CODES = {403, 429, 503}
 
 _REDIRECT_DOMAINS = {
-    "consent.google.com", "accounts.google.com", "login.live.com",
+    "consent.google.com",
+    "accounts.google.com",
+    "login.live.com",
 }
 
 
@@ -87,7 +98,11 @@ def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
 
     if blocked:
         for url, code, err, proxy in blocked:
-            qa.warn("blocks", f"HTTP {code} on {url}", f"proxy={proxy}, error={err or 'none'}")
+            qa.warn(
+                "blocks",
+                f"HTTP {code} on {url}",
+                f"proxy={proxy}, error={err or 'none'}",
+            )
     else:
         qa.ok("blocks", "No HTTP 403/429/503 responses detected")
 
@@ -104,7 +119,11 @@ def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
 
     if captcha_found:
         for title, url, proxy in captcha_found[:5]:
-            qa.warn("blocks", "Possible CAPTCHA page detected", f"title='{title[:80]}', proxy={proxy}")
+            qa.warn(
+                "blocks",
+                "Possible CAPTCHA page detected",
+                f"title='{title[:80]}', proxy={proxy}",
+            )
     else:
         qa.ok("blocks", "No CAPTCHA-like page titles detected")
 
@@ -126,16 +145,25 @@ def check_redirects(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
 
     if unexpected:
         for target, final, proxy, phase in unexpected[:5]:
-            qa.warn("redirects", "Redirect to consent/login page",
-                    f"target={target} -> final={final}, proxy={proxy}, phase={phase}")
+            qa.warn(
+                "redirects",
+                "Redirect to consent/login page",
+                f"target={target} -> final={final}, proxy={proxy}, phase={phase}",
+            )
     else:
         qa.ok("redirects", "No unexpected redirect chains detected")
 
 
 def check_manipulation(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     anti_bot_patterns = [
-        "blocked", "denied", "suspicious", "automated", "bot",
-        "unusual traffic", "security violation", "rate limited",
+        "blocked",
+        "denied",
+        "suspicious",
+        "automated",
+        "bot",
+        "unusual traffic",
+        "security violation",
+        "rate limited",
     ]
 
     dom_snippets = cur.execute(
@@ -151,8 +179,11 @@ def check_manipulation(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None
 
     if flagged:
         for site, proxy, snippet in flagged[:5]:
-            qa.warn("manipulation", "Anti-bot DOM pattern detected",
-                    f"site={site}, proxy={proxy}, snippet='{snippet}...'")
+            qa.warn(
+                "manipulation",
+                "Anti-bot DOM pattern detected",
+                f"site={site}, proxy={proxy}, snippet='{snippet}...'",
+            )
     else:
         qa.ok("manipulation", "No anti-bot DOM patterns detected")
 
@@ -176,7 +207,11 @@ def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     for proxy, profile, n in counts:
         matrix[(proxy, profile)] = n
 
-    expected = sum(matrix.values()) / (len(proxies) * len(profiles)) if proxies and profiles else 0
+    expected = (
+        sum(matrix.values()) / (len(proxies) * len(profiles))
+        if proxies and profiles
+        else 0
+    )
 
     imbalanced = []
     for proxy in proxies:
@@ -187,12 +222,23 @@ def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
 
     if imbalanced:
         for proxy, profile, actual, exp in imbalanced:
-            qa.warn("balance", f"Count imbalance: {proxy}/{profile}",
-                    f"expected ~{exp}, got {actual} (>{30}% deviation)")
+            qa.warn(
+                "balance",
+                f"Count imbalance: {proxy}/{profile}",
+                f"expected ~{exp}, got {actual} (>{30}% deviation)",
+            )
     else:
-        qa.ok("balance", f"Observation counts balanced across {len(proxies)} proxies x {len(profiles)} profiles")
+        qa.ok(
+            "balance",
+            f"Observation counts balanced across {len(proxies)} proxies x {len(profiles)} profiles",
+        )
 
-    missing_cells = [(proxy, profile) for proxy in proxies for profile in profiles if (proxy, profile) not in matrix]
+    missing_cells = [
+        (proxy, profile)
+        for proxy in proxies
+        for profile in profiles
+        if (proxy, profile) not in matrix
+    ]
 
     if missing_cells:
         for proxy, profile in missing_cells:
@@ -329,7 +375,9 @@ def main(trial_id: str, db_url: str, strict: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate a completed trial")
     parser.add_argument("--trial-id", required=True, help="Trial UUID to validate")
-    parser.add_argument("--strict", action="store_true", help="Fail fast on first anomaly")
+    parser.add_argument(
+        "--strict", action="store_true", help="Fail fast on first anomaly"
+    )
     parser.add_argument("--db-url", default="sqlite:///out/ads.db")
     args = parser.parse_args()
     sys.exit(main(args.trial_id, args.db_url, args.strict))

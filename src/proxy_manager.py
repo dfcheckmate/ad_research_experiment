@@ -121,7 +121,9 @@ def main() -> None:
             time.sleep(1)
             for label, proc in list(pm._procs.items()):
                 if proc.poll() is not None:
-                    logger.warning("%s exited (code=%s), restarting", label, proc.returncode)
+                    logger.warning(
+                        "%s exited (code=%s), restarting", label, proc.returncode
+                    )
                     port = PROXY_PORTS[label]
                     pm._procs[label] = subprocess.Popen(
                         pm._build_cmd(label, port),

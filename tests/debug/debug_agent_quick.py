@@ -1,7 +1,7 @@
 import asyncio
 from importlib import import_module
 
-cfg = import_module('config')
+cfg = import_module("config")
 from agent import run_agent
 
 # pick one proxy and one site to speed up
@@ -13,11 +13,13 @@ proxy_url = cfg.PROXIES[zip_label]
 # restrict AD_SITES at runtime to a single site
 cfg.AD_SITES = [cfg.AD_SITES[0]]
 
+
 async def main():
     obs = await run_agent(trial_id, zip_label, intent, proxy_url, pool=None)
-    print('observations:', len(obs))
+    print("observations:", len(obs))
     for o in obs[:200]:
-        print(o.get('ad_url'))
+        print(o.get("ad_url"))
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     asyncio.run(main())
