@@ -154,7 +154,7 @@ jobs:
 
       - name: Run tests in container
         run: |
-          docker run --rm ad-research-experiment:ci pytest tests/ -q --cov=src --cov-report=xml
+          docker run --rm --entrypoint pytest ad-research-experiment:ci tests/ -q --cov=src --cov-report=xml
 
   mcp-docker-push:
     name: Push Docker Images
