@@ -12,6 +12,9 @@ env:
   PYTHONPATH: ${{ github.workspace }}/src
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
+  EXPERIMENT_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+  MCP_CONTROLLER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller
+  MCP_RUNNER_IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner
 
 jobs:
   pytest:
@@ -33,7 +36,7 @@ jobs:
 
       - name: Run pytest with coverage
         run: |
-          pytest tests/ -q --cov=src --cov-report=xml --cov-report=term-missing
+          pytest -q --cov=src --cov-report=xml --cov-report=term-missing
         env:
           DB_URL: sqlite:///test.db
           PROXY_MODE: local
@@ -153,7 +156,7 @@ jobs:
 
       - name: Run tests in container
         run: |
-          docker run --rm ad-research-experiment:ci pytest tests/ -q
+          docker run --rm ad-research-experiment:ci pytest -q
 
   mcp-docker-push:
     name: Push Docker Images
@@ -176,25 +179,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner
-          tags: |
-            type=ref,event=tag
-            type=sha,prefix=
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
+      - name: Determine image tag
+        id: tag
+        run: |
+          if [ -n "${{ github.ref_name }}" ] && [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          else
+            echo "tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+          fi
 
       - name: Build and push experiment image
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
+          tags: |
+            ${{ env.EXPERIMENT_IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.EXPERIMENT_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -204,7 +205,9 @@ jobs:
           context: .
           file: controller/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/controller:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          tags: |
+            ${{ env.MCP_CONTROLLER_IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.MCP_CONTROLLER_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -214,7 +217,9 @@ jobs:
           context: .
           file: runner/Dockerfile
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/runner:${{ github.ref_type == 'tag' && github.ref_name || github.sha }}
+          tags: |
+            ${{ env.MCP_RUNNER_IMAGE }}:${{ steps.tag.outputs.tag }}
+            ${{ env.MCP_RUNNER_IMAGE }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
