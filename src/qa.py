@@ -1,9 +1,4 @@
-"""Trial Quality Assurance — validates a completed trial for data integrity
-and flags anomalies (blocking, redirects, manipulation, balance, integrity).
-
-Usage:
-    python src/qa.py --trial-id <uuid> [--strict] [--db-url sqlite:///out/ads.db]
-"""
+"""Trial quality assurance — validates data integrity and flags anomalies."""
 
 from __future__ import annotations
 
@@ -13,12 +8,25 @@ import sqlite3
 import sys
 from urllib.parse import urlparse
 
-# ── CAPTCHA / block detection patterns ────────────────────────────────────────
+from logging_config import configure_logging, get_logger
+
+configure_logging()
+logger = get_logger(__name__)
+
 _CAPTCHA_INDICATORS = [
-    "captcha", "recaptcha", "hcaptcha", "turnstile", "challenge",
-    "verify you are human", "security check", "access denied",
-    "please solve the challenge", "prove you are not a robot",
-    "unusual traffic", "automated requests", "rate limit exceeded",
+    "captcha",
+    "recaptcha",
+    "hcaptcha",
+    "turnstile",
+    "challenge",
+    "verify you are human",
+    "security check",
+    "access denied",
+    "please solve the challenge",
+    "prove you are not a robot",
+    "unusual traffic",
+    "automated requests",
+    "rate limit exceeded",
 ]
 
 _BLOCK_STATUS_CODES = {403, 429, 503}
@@ -64,10 +72,10 @@ class QAResult:
         self.passed.append(check)
         print(f"  [OK]   [{check}] {message}")
 
-    def summary(self):
-        print(f"\n{'=' * 60}")
+    def summary(self) -> int:
+        print("\n" + "=" * 60)
         print(f"QA Summary — trial {self.trial_id}")
-        print(f"{'=' * 60}")
+        print("=" * 60)
         print(f"  Checks passed : {len(self.passed)}")
         print(f"  Warnings      : {len(self.warnings)}")
         print(f"  Errors        : {len(self.errors)}")
@@ -81,10 +89,7 @@ class QAResult:
         return 0
 
 
-# ── Check 1: Blocks ──────────────────────────────────────────────────────────
-
-def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
-    """Detect HTTP 403/429/503 status codes and CAPTCHA-like page titles."""
+def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     blocked = cur.execute(
         "SELECT target_url, status_code, error_type, zip_condition "
         "FROM page_visits WHERE trial_id = ? AND status_code IN (403, 429, 503)",
@@ -93,7 +98,11 @@ def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     if blocked:
         for url, code, err, proxy in blocked:
-            qa.warn("blocks", f"HTTP {code} on {url}", f"proxy={proxy}, error={err or 'none'}")
+            qa.warn(
+                "blocks",
+                f"HTTP {code} on {url}",
+                f"proxy={proxy}, error={err or 'none'}",
+            )
     else:
         qa.ok("blocks", "No HTTP 403/429/503 responses detected")
 
@@ -105,22 +114,21 @@ def check_blocks(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     captcha_found = []
     for title, url, proxy in captcha_hits:
-        lower = title.lower()
-        if any(ind in lower for ind in _CAPTCHA_INDICATORS):
+        if any(ind in title.lower() for ind in _CAPTCHA_INDICATORS):
             captcha_found.append((title, url, proxy))
 
     if captcha_found:
         for title, url, proxy in captcha_found[:5]:
-            qa.warn("blocks", f"Possible CAPTCHA page detected",
-                    f"title='{title[:80]}', proxy={proxy}")
+            qa.warn(
+                "blocks",
+                "Possible CAPTCHA page detected",
+                f"title='{title[:80]}', proxy={proxy}",
+            )
     else:
         qa.ok("blocks", "No CAPTCHA-like page titles detected")
 
 
-# ── Check 2: Redirects ───────────────────────────────────────────────────────
-
-def check_redirects(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
-    """Flag visits where final_url differs significantly from target_url."""
+def check_redirects(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     redirects = cur.execute(
         "SELECT target_url, final_url, zip_condition, phase "
         "FROM page_visits WHERE trial_id = ? AND final_url IS NOT NULL "
@@ -137,19 +145,25 @@ def check_redirects(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     if unexpected:
         for target, final, proxy, phase in unexpected[:5]:
-            qa.warn("redirects", f"Redirect to consent/login page",
-                    f"target={target} -> final={final}, proxy={proxy}, phase={phase}")
+            qa.warn(
+                "redirects",
+                "Redirect to consent/login page",
+                f"target={target} -> final={final}, proxy={proxy}, phase={phase}",
+            )
     else:
         qa.ok("redirects", "No unexpected redirect chains detected")
 
 
-# ── Check 3: Manipulation (DOM differences) ──────────────────────────────────
-
-def check_manipulation(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
-    """Check for DOM snippet patterns that suggest anti-bot pages."""
+def check_manipulation(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     anti_bot_patterns = [
-        "blocked", "denied", "suspicious", "automated", "bot",
-        "unusual traffic", "security violation", "rate limited",
+        "blocked",
+        "denied",
+        "suspicious",
+        "automated",
+        "bot",
+        "unusual traffic",
+        "security violation",
+        "rate limited",
     ]
 
     dom_snippets = cur.execute(
@@ -160,22 +174,21 @@ def check_manipulation(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     flagged = []
     for snippet, site, proxy in dom_snippets:
-        lower = snippet.lower()
-        if any(pat in lower for pat in anti_bot_patterns):
+        if any(pat in snippet.lower() for pat in anti_bot_patterns):
             flagged.append((site, proxy, snippet[:120]))
 
     if flagged:
         for site, proxy, snippet in flagged[:5]:
-            qa.warn("manipulation", f"Anti-bot DOM pattern detected",
-                    f"site={site}, proxy={proxy}, snippet='{snippet}...'")
+            qa.warn(
+                "manipulation",
+                "Anti-bot DOM pattern detected",
+                f"site={site}, proxy={proxy}, snippet='{snippet}...'",
+            )
     else:
         qa.ok("manipulation", "No anti-bot DOM patterns detected")
 
 
-# ── Check 4: Balance ─────────────────────────────────────────────────────────
-
-def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
-    """Verify observation count parity across proxy identities and intent profiles."""
+def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     counts = cur.execute(
         "SELECT zip_condition, intent_profile, COUNT(*) as n "
         "FROM ad_observations WHERE trial_id = ? "
@@ -194,7 +207,11 @@ def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
     for proxy, profile, n in counts:
         matrix[(proxy, profile)] = n
 
-    expected = sum(matrix.values()) / (len(proxies) * len(profiles)) if proxies and profiles else 0
+    expected = (
+        sum(matrix.values()) / (len(proxies) * len(profiles))
+        if proxies and profiles
+        else 0
+    )
 
     imbalanced = []
     for proxy in proxies:
@@ -205,16 +222,23 @@ def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     if imbalanced:
         for proxy, profile, actual, exp in imbalanced:
-            qa.warn("balance", f"Count imbalance: {proxy}/{profile}",
-                    f"expected ~{exp}, got {actual} (>{30}% deviation)")
+            qa.warn(
+                "balance",
+                f"Count imbalance: {proxy}/{profile}",
+                f"expected ~{exp}, got {actual} (>{30}% deviation)",
+            )
     else:
-        qa.ok("balance", f"Observation counts balanced across {len(proxies)} proxies x {len(profiles)} profiles")
+        qa.ok(
+            "balance",
+            f"Observation counts balanced across {len(proxies)} proxies x {len(profiles)} profiles",
+        )
 
-    missing_cells = []
-    for proxy in proxies:
-        for profile in profiles:
-            if (proxy, profile) not in matrix:
-                missing_cells.append((proxy, profile))
+    missing_cells = [
+        (proxy, profile)
+        for proxy in proxies
+        for profile in profiles
+        if (proxy, profile) not in matrix
+    ]
 
     if missing_cells:
         for proxy, profile in missing_cells:
@@ -223,10 +247,7 @@ def check_balance(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
         qa.ok("balance", "All proxy x profile cells present")
 
 
-# ── Check 5: Data integrity ──────────────────────────────────────────────────
-
-def check_integrity(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
-    """Check for missing rows, null required columns, malformed data."""
+def check_integrity(cur: sqlite3.Cursor, trial_id: str, qa: QAResult) -> None:
     obs_count = cur.execute(
         "SELECT COUNT(*) FROM ad_observations WHERE trial_id = ?",
         (trial_id,),
@@ -264,7 +285,6 @@ def check_integrity(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
 
     if trial_exists:
         qa.ok("integrity", "Trial record exists in trials table")
-
         meta_raw = cur.execute(
             "SELECT trial_meta FROM trials WHERE trial_id = ?",
             (trial_id,),
@@ -304,18 +324,13 @@ def check_integrity(cur: sqlite3.Cursor, trial_id: str, qa: QAResult):
         qa.ok("integrity", "No orphaned ad_observations rows")
 
 
-# ── Main ──────────────────────────────────────────────────────────────────────
-
 def main(trial_id: str, db_url: str, strict: bool) -> int:
-    if db_url.startswith("sqlite:///"):
-        db_path = db_url.removeprefix("sqlite:///")
-    else:
-        print(f"[qa] Unsupported DB URL: {db_url}")
+    if not db_url.startswith("sqlite:///"):
+        logger.error("Unsupported DB URL: %s", db_url)
         return 1
 
-    print(f"[qa] Validating trial {trial_id}")
-    print(f"[qa] Database: {db_path}")
-    print()
+    db_path = db_url.removeprefix("sqlite:///")
+    logger.info("Validating trial %s", trial_id)
 
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
@@ -326,8 +341,8 @@ def main(trial_id: str, db_url: str, strict: bool) -> int:
     ).fetchone()[0]
 
     if not trial_exists:
-        print(f"[qa] ERROR: trial {trial_id} not found in database")
-        print(f"[qa] Available trials:")
+        logger.error("trial %s not found in database", trial_id)
+        print("\nAvailable trials:")
         rows = cur.execute(
             "SELECT trial_id, started_at FROM trials ORDER BY started_at DESC LIMIT 10"
         ).fetchall()
@@ -338,7 +353,7 @@ def main(trial_id: str, db_url: str, strict: bool) -> int:
 
     qa = QAResult(trial_id, strict=strict)
 
-    print("── Check 1: Blocking / CAPTCHA ──")
+    print("\n── Check 1: Blocking / CAPTCHA ──")
     check_blocks(cur, trial_id, qa)
 
     print("\n── Check 2: Redirects ──")
@@ -360,7 +375,9 @@ def main(trial_id: str, db_url: str, strict: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Validate a completed trial")
     parser.add_argument("--trial-id", required=True, help="Trial UUID to validate")
-    parser.add_argument("--strict", action="store_true", help="Fail fast on first anomaly")
+    parser.add_argument(
+        "--strict", action="store_true", help="Fail fast on first anomaly"
+    )
     parser.add_argument("--db-url", default="sqlite:///out/ads.db")
     args = parser.parse_args()
     sys.exit(main(args.trial_id, args.db_url, args.strict))

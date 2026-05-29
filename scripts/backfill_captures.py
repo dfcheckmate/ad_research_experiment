@@ -16,7 +16,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import uuid
 from pathlib import Path
 
@@ -207,11 +206,17 @@ async def main(dry_run: bool) -> None:
 
     if not dry_run:
         print("[backfill] done. Query with:")
-        print("  SELECT proxy_identity, intent_profile, COUNT(*) FROM captures GROUP BY 1,2 ORDER BY 1,2;")
+        print(
+            "  SELECT proxy_identity, intent_profile, COUNT(*) FROM captures GROUP BY 1,2 ORDER BY 1,2;"
+        )
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Backfill captures table from screenshot files")
-    parser.add_argument("--dry-run", action="store_true", help="Print files without inserting")
+    parser = argparse.ArgumentParser(
+        description="Backfill captures table from screenshot files"
+    )
+    parser.add_argument(
+        "--dry-run", action="store_true", help="Print files without inserting"
+    )
     args = parser.parse_args()
     asyncio.run(main(args.dry_run))

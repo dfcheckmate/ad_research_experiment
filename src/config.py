@@ -20,7 +20,9 @@ load_dotenv()
 # ── Database ──────────────────────────────────────────────────────────────────
 # Default: PostgreSQL (avoids SQLite lock contention during concurrent trials).
 # Override with a sqlite:// URL for local/dev: DB_URL=sqlite:///out/ads.db
-DB_URL = os.getenv("DB_URL", "postgresql://researcher:research@localhost:5432/ad_research")
+DB_URL = os.getenv(
+    "DB_URL", "postgresql://researcher:research@localhost:5432/ad_research"
+)
 
 # ── Proxy mode ───────────────────────────────────────────────────────────────
 # residential | local | socks5 | upstream | upstream_mitm
@@ -319,7 +321,9 @@ def sites_for_trial(trial_id: str) -> list[str]:
 
     # Trim over-allocation from the largest strata first if rounding overshot.
     if allocated > sample_n:
-        for stratum, _domains in sorted(ordered, key=lambda item: len(item[1]), reverse=True):
+        for stratum, _domains in sorted(
+            ordered, key=lambda item: len(item[1]), reverse=True
+        ):
             while allocated > sample_n and counts[stratum] > 0:
                 counts[stratum] -= 1
                 allocated -= 1
@@ -336,6 +340,7 @@ def sites_for_trial(trial_id: str) -> list[str]:
         selected.extend(rotated[:count])
 
     return selected[:sample_n]
+
 
 # ── Experiment parameters ────────────────────────────────────────────────────
 N_TRIALS = 200  # number of trials

@@ -1,38 +1,25 @@
-"""OpenAlex literature search client.
-
-Searches the OpenAlex API for academic papers on ad delivery discrimination,
-proxy-based auditing, and related research. Results are cached in the local
-database for future reference.
-
-OpenAlex requires no API key. Polite pool (default) allows 100 req/10sec.
-Add an email via OPENALEX_EMAIL env var for the faster pool (no hard limit).
-
-Usage:
-    python src/literature.py search --query "<terms>" [--limit N] [--year-from YYYY] [--deep]
-    python src/literature.py list [--limit N]
-    python src/literature.py stats
-"""
+"""OpenAlex literature search client."""
 
 from __future__ import annotations
 
 import argparse
 import os
-import re
 import sqlite3
-import sys
 import time
 from datetime import datetime
 
 import requests
 from dotenv import load_dotenv
 
+from logging_config import configure_logging, get_logger
+
 load_dotenv()
+configure_logging()
+logger = get_logger(__name__)
 
 OPENALEX_API_KEY = os.getenv("OPENALEX_API_KEY", "")
 OPENALEX_EMAIL = os.getenv("OPENALEX_EMAIL", "")
 OPENALEX_BASE = "https://api.openalex.org"
-
-# ── Database cache ────────────────────────────────────────────────────────────
 
 LITERATURE_SCHEMA = """
 CREATE TABLE IF NOT EXISTS literature_cache (
@@ -65,11 +52,9 @@ def _get_db():
     return conn
 
 
-# ── OpenAlex API client ──────────────────────────────────────────────────────
-
-def _search_openalex(query: str, limit: int = 20, year_from: int = 2018,
-                     deep: bool = False) -> list[dict]:
-    """Search OpenAlex API for works."""
+def _search_openalex(
+    query: str, limit: int = 20, year_from: int = 2018, deep: bool = False
+) -> list[dict]:
     max_pages = 30 if deep else 10
     page_size = min(limit, 200)
     total_results: list[dict] = []
@@ -88,15 +73,12 @@ def _search_openalex(query: str, limit: int = 20, year_from: int = 2018,
             "cursor": cursor,
             "sort": "cited_by_count:desc",
         }
-        # OpenAlex 'search' parameter searches title + abstract + full text
-        # Use title.search filter only for short, specific phrases
         words = query.split()
         if len(words) <= 3:
             params["filter"] = f"title.search:{query}"
             if year_from:
                 params["filter"] += f",publication_year:{year_from}-"
         else:
-            # For longer queries, use general search (title + abstract + full text)
             params["search"] = query
             if year_from:
                 params["filter"] = f"publication_year:{year_from}-"
@@ -104,146 +86,117 @@ def _search_openalex(query: str, limit: int = 20, year_from: int = 2018,
         try:
             resp = requests.get(
                 f"{OPENALEX_BASE}/works",
-                headers=headers,
                 params=params,
+                headers=headers,
                 timeout=30,
             )
             calls_made += 1
 
             if resp.status_code == 429:
-                wait = int(resp.headers.get("Retry-After", "5"))
-                print(f"[literature] Rate limited, waiting {wait}s...")
+                wait = int(resp.headers.get("Retry-After", 10))
+                logger.warning("Rate limited, waiting %ds", wait)
                 time.sleep(wait)
                 continue
 
             if resp.status_code != 200:
-                print(f"[literature] API error {resp.status_code}: {resp.text[:200]}")
+                logger.error("API error %s: %s", resp.status_code, resp.text[:200])
                 break
 
             data = resp.json()
             results = data.get("results", [])
-            if not results:
-                break
-
             total_results.extend(results)
-            cursor = data.get("meta", {}).get("next_cursor", "")
-            if not cursor:
+
+            cursor = data.get("meta", {}).get("next_cursor")
+            if not cursor or cursor == "*":
                 break
 
-            total_count = data.get("meta", {}).get("count", 0)
-            print(f"[literature] Call {calls_made}/{max_pages} — {len(results)} results "
-                  f"(total matching: {total_count})")
-
-            if len(results) < page_size:
-                break
+            time.sleep(0.1)
 
         except requests.RequestException as e:
-            print(f"[literature] Request failed: {e}")
+            logger.error("Request failed: %s", e)
             break
 
-    print(f"[literature] Total results fetched: {len(total_results)}")
-    return total_results[:limit]
-
-
-def _get_venue(r: dict) -> str:
-    loc = r.get("primary_location")
-    if not loc:
-        return ""
-    source = loc.get("source")
-    if not source:
-        return ""
-    return source.get("display_name", "")
+    logger.info("Total results fetched: %d", len(total_results))
+    return total_results
 
 
 def _parse_result(r: dict) -> dict:
-    """Parse an OpenAlex work into a flat dict."""
+    work_id = r.get("id", "").replace("https://openalex.org/", "")
+    title = r.get("title", "") or ""
+    doi = r.get("doi", "")
+
     authors = []
-    for authorship in r.get("authorships", []) or []:
-        author = authorship.get("author", {})
-        name = author.get("display_name", "")
+    for a in r.get("authorships", [])[:5]:
+        name = a.get("author", {}).get("display_name", "")
         if name:
             authors.append(name)
+    authors_str = "; ".join(authors)
 
+    year = r.get("publication_year")
+    venue = (
+        r.get("primary_location", {}).get("source", {}).get("display_name", "") or ""
+    )
+    citation_count = r.get("cited_by_count", 0) or 0
+
+    abstract = ""
+    if "abstract_inverted_index" in r and r["abstract_inverted_index"]:
+        abstract = " ".join(
+            sorted(
+                r["abstract_inverted_index"].keys(),
+                key=lambda k: min(r["abstract_inverted_index"][k]),
+            )
+        )
+
+    open_access_url = ""
     oa = r.get("open_access", {})
-    oa_url = oa.get("oa_url") if oa else None
-
-    abstract = r.get("abstract_inverted_index")
-    abstract_text = ""
-    if abstract:
-        # Reconstruct abstract from inverted index
-        positions = {}
-        for word, idxs in abstract.items():
-            for idx in idxs:
-                positions[idx] = word
-        abstract_text = " ".join(positions.get(i, "") for i in sorted(positions))
+    if oa.get("is_oa") and oa.get("oa_url"):
+        open_access_url = oa["oa_url"]
 
     return {
-        "work_id": r.get("id", ""),
-        "title": r.get("title", ""),
-        "authors": ", ".join(authors) if authors else "",
-        "year": r.get("publication_year"),
-        "venue": _get_venue(r),
-        "doi": r.get("doi", ""),
-        "abstract": abstract_text[:500] if abstract_text else "",
-        "open_access_url": oa_url,
-        "citation_count": r.get("cited_by_count", 0),
+        "work_id": work_id,
+        "title": title,
+        "authors": authors_str,
+        "year": year,
+        "venue": venue,
+        "doi": doi,
+        "abstract": abstract,
+        "open_access_url": open_access_url,
+        "citation_count": citation_count,
     }
 
 
-# ── Commands ──────────────────────────────────────────────────────────────────
-
 def _to_bibtex(parsed: dict) -> str:
-    """Convert a parsed result to a BibTeX entry."""
-    # Generate a clean citation key: first_author_year_keyword
-    authors = parsed["authors"].split(", ")
-    first_author = authors[0].split()[-1] if authors else "Unknown"
-    year = parsed["year"] or "n.d."
-    # Use first 3 words of title as keyword
-    title_words = re.sub(r'[^\w\s]', '', parsed["title"]).split()[:3]
-    keyword = "_".join(title_words).lower()
-    cite_key = f"{first_author.lower()}_{year}_{keyword}"
-
-    # Escape special BibTeX characters
-    def escape(val):
-        if not val: return ""
-        return val.replace("{", "\\{").replace("}", "\\}")
-
-    entry = f"@article{{{cite_key},\n"
-    entry += f"  title={{{escape(parsed['title'])}}},\n"
-    entry += f"  author={{{escape(parsed['authors'])}}},\n"
-    entry += f"  year={{{year}}},\n"
+    key = parsed["work_id"].replace("/", "_")
+    entry = f"@article{{{key},\n"
+    entry += f"  title={{{parsed['title']}}},\n"
+    if parsed["authors"]:
+        entry += f"  author={{{parsed['authors']}}},\n"
+    if parsed["year"]:
+        entry += f"  year={{{parsed['year']}}},\n"
     if parsed["venue"]:
-        entry += f"  journal={{{escape(parsed['venue'])}}},\n"
+        entry += f"  journal={{{parsed['venue']}}},\n"
     if parsed["doi"]:
         entry += f"  doi={{{parsed['doi']}}},\n"
     if parsed["open_access_url"]:
         entry += f"  url={{{parsed['open_access_url']}}},\n"
-    if parsed["abstract"]:
-        entry += f"  abstract={{{escape(parsed['abstract'])}}},\n"
-    entry += f"  citation_count={{{parsed['citation_count']}}}\n"
     entry += "}\n"
     return entry
 
 
 def cmd_search(args):
-    query = args.query
-    limit = args.limit
-    year_from = args.year_from
-    deep = args.deep
-
-    print(f"[literature] Searching OpenAlex: \"{query}\"")
-    print(f"[literature] limit={limit}, year_from={year_from}, deep={deep}")
+    logger.info('Searching OpenAlex: "%s"', args.query)
+    logger.info(
+        "limit=%d, year_from=%d, deep=%s", args.limit, args.year_from, args.deep
+    )
     if OPENALEX_EMAIL:
-        print(f"[literature] Using polite pool with email: {OPENALEX_EMAIL}")
-    print()
+        logger.info("Using polite pool with email: %s", OPENALEX_EMAIL)
 
-    results = _search_openalex(query, limit, year_from, deep)
+    results = _search_openalex(args.query, args.limit, args.year_from, args.deep)
 
     if not results:
-        print("[literature] No results found.")
+        logger.warning("No results found.")
         return
 
-    # Cache results
     conn = _get_db()
     cur = conn.cursor()
     cached_count = 0
@@ -269,7 +222,7 @@ def cmd_search(args):
                     parsed["abstract"],
                     parsed["open_access_url"],
                     parsed["citation_count"],
-                    query,
+                    args.query,
                     datetime.now().isoformat(),
                 ),
             )
@@ -280,10 +233,9 @@ def cmd_search(args):
 
     conn.commit()
 
-    # Display results
-    print(f"\n{'=' * 80}")
+    print("\n" + "=" * 80)
     print(f"RESULTS ({len(results)} papers)")
-    print(f"{'=' * 80}\n")
+    print("=" * 80 + "\n")
 
     for i, r in enumerate(results, 1):
         parsed = _parse_result(r)
@@ -304,48 +256,45 @@ def cmd_search(args):
             print(f"    OA:      {parsed['open_access_url']}")
         print()
 
-    print(f"[literature] {cached_count} new results cached in database.")
+    logger.info("%d new results cached in database", cached_count)
 
-    # Export to BibTeX if requested
     if args.export_bib:
         bib_dir = "literature"
         os.makedirs(bib_dir, exist_ok=True)
         bib_path = os.path.join(bib_dir, "references.bib")
 
         with open(bib_path, "w", encoding="utf-8") as f:
-            f.write(f"% Generated by OpenAlex search: \"{query}\"\n")
+            f.write(f'% Generated by OpenAlex search: "{args.query}"\n')
             f.write(f"% Date: {datetime.now().isoformat()}\n\n")
             for r in results:
                 parsed = _parse_result(r)
                 if parsed["work_id"]:
                     f.write(_to_bibtex(parsed) + "\n")
 
-        print(f"[literature] Exported {len(results)} entries to {bib_path}")
-
-    conn.close()
+        logger.info("Exported %d entries to %s", len(results), bib_path)
 
 
 def cmd_list(args):
-    """List cached literature results."""
     conn = _get_db()
-    limit = args.limit
-    rows = conn.execute(
-        "SELECT work_id, title, authors, year, venue, citation_count, query_tag, fetched_at "
-        "FROM literature_cache ORDER BY fetched_at DESC LIMIT ?",
+    cur = conn.cursor()
+
+    limit = args.limit or 50
+    rows = cur.execute(
+        "SELECT title, authors, year, venue, query_tag, fetched_at "
+        "FROM literature_cache ORDER BY year DESC, citation_count DESC LIMIT ?",
         (limit,),
     ).fetchall()
 
     if not rows:
-        print("[literature] No cached results.")
-        conn.close()
+        logger.warning("No cached results.")
         return
 
-    print(f"\n{'=' * 80}")
+    print("\n" + "=" * 80)
     print(f"CACHED LITERATURE ({len(rows)} entries)")
-    print(f"{'=' * 80}\n")
+    print("=" * 80 + "\n")
 
-    for wid, title, authors, year, venue, cites, tag, fetched in rows:
-        cite_str = f" ({cites} cites)" if cites else ""
+    for title, authors, year, venue, tag, fetched in rows:
+        cite_str = ""
         print(f"  [{year or '?'}] {title[:100]}{cite_str}")
         print(f"       {authors[:80]}")
         if venue:
@@ -353,70 +302,56 @@ def cmd_list(args):
         print(f"       query: {tag} | cached: {fetched}")
         print()
 
-    conn.close()
-
 
 def cmd_stats(args):
-    """Show literature cache statistics."""
     conn = _get_db()
-    total = conn.execute("SELECT COUNT(*) FROM literature_cache").fetchone()[0]
-    queries = conn.execute(
-        "SELECT query_tag, COUNT(*) as n FROM literature_cache "
-        "GROUP BY query_tag ORDER BY n DESC"
-    ).fetchall()
-    year_range = conn.execute(
-        "SELECT MIN(year), MAX(year) FROM literature_cache WHERE year IS NOT NULL"
-    ).fetchone()
-    total_cites = conn.execute(
-        "SELECT COALESCE(SUM(citation_count), 0) FROM literature_cache"
-    ).fetchone()[0]
+    cur = conn.cursor()
 
-    print(f"\n{'=' * 60}")
-    print(f"LITERATURE CACHE STATS")
-    print(f"{'=' * 60}")
+    total = cur.execute("SELECT COUNT(*) FROM literature_cache").fetchone()[0]
+    total_cites = (
+        cur.execute("SELECT SUM(citation_count) FROM literature_cache").fetchone()[0]
+        or 0
+    )
+    year_range = cur.execute(
+        "SELECT MIN(year), MAX(year) FROM literature_cache"
+    ).fetchone()
+    queries = cur.execute(
+        "SELECT query_tag, COUNT(*) as n FROM literature_cache GROUP BY query_tag ORDER BY n DESC"
+    ).fetchall()
+
+    print("\n" + "=" * 60)
+    print("LITERATURE CACHE STATS")
+    print("=" * 60)
     print(f"  Total papers cached: {total}")
     print(f"  Total citations:     {total_cites}")
     if year_range[0]:
         print(f"  Year range: {year_range[0]} - {year_range[1]}")
-    print(f"\n  Queries:")
-    for tag, n in queries:
+    print("\n  Queries:")
+    for tag, n in queries[:10]:
         print(f"    {tag}: {n} papers")
     print()
-    conn.close()
 
-
-# ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="OpenAlex literature search")
-    subparsers = parser.add_subparsers(dest="command")
+    parser = argparse.ArgumentParser(description="OpenAlex literature client")
+    subparsers = parser.add_subparsers(dest="command", required=True)
 
-    # Search
-    search_parser = subparsers.add_parser("search", help="Search OpenAlex")
-    search_parser.add_argument("--query", required=True, help="Search query")
-    search_parser.add_argument("--limit", type=int, default=20)
-    search_parser.add_argument("--year-from", type=int, default=2018)
-    search_parser.add_argument("--deep", action="store_true",
-                               help="Deep scan — more API calls for broader results")
-    search_parser.add_argument("--export-bib", action="store_true",
-                               help="Export results to literature/references.bib")
-    search_parser.set_defaults(func=cmd_search)
+    search = subparsers.add_parser("search", help="Search OpenAlex")
+    search.add_argument("--query", required=True, help="Search query")
+    search.add_argument("--limit", type=int, default=20, help="Max results")
+    search.add_argument("--year-from", type=int, default=2018, help="Minimum year")
+    search.add_argument("--deep", action="store_true", help="Fetch more pages")
+    search.add_argument("--export-bib", action="store_true", help="Export to BibTeX")
+    search.set_defaults(func=cmd_search)
 
-    # List
-    list_parser = subparsers.add_parser("list", help="List cached results")
-    list_parser.add_argument("--limit", type=int, default=20)
+    list_parser = subparsers.add_parser("list", help="List cached papers")
+    list_parser.add_argument("--limit", type=int, help="Max entries to show")
     list_parser.set_defaults(func=cmd_list)
 
-    # Stats
-    stats_parser = subparsers.add_parser("stats", help="Show cache statistics")
-    stats_parser.set_defaults(func=cmd_stats)
+    stats = subparsers.add_parser("stats", help="Show cache statistics")
+    stats.set_defaults(func=cmd_stats)
 
     args = parser.parse_args()
-
-    if not hasattr(args, "func"):
-        parser.print_help()
-        sys.exit(1)
-
     args.func(args)
 
 

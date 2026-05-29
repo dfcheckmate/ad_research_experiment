@@ -1,23 +1,4 @@
-"""
-Causal Analysis
---------------
-Loads ad observations and estimates the causal effect of
-proxy identity (ZIP condition / household identity) on ad composition.
-
-Primary outcomes: ad-domain distribution, ad-network composition,
-platform-class mix, and diversity metrics (entropy, HHI, unique domains).
-
-Secondary (diagnostic): ad volume, used as balance check
-since measurement exposure is held approximately constant by design.
-
-Statistical models:
-  1. Logistic regression  - P(ad exposure | ZIP)
-  2. Chi-square test      - independence of ad domain x ZIP condition
-  3. Top-domain breakdown - which advertisers differ most across ZIP conditions
-
-Usage:
-    python analysis.py [--output out/results/]
-"""
+"""Causal analysis — estimates effect of proxy identity on ad composition."""
 
 from __future__ import annotations
 
@@ -26,6 +7,7 @@ import asyncio
 import os
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pandas as pd
 import seaborn as sns
 import statsmodels.api as sm
@@ -33,6 +15,10 @@ import statsmodels.formula.api as smf
 from scipy.stats import chi2_contingency
 
 from config import DB_URL
+from logging_config import configure_logging, get_logger, log_result
+
+configure_logging()
+logger = get_logger(__name__)
 
 USE_SQLITE = DB_URL.startswith("sqlite")
 SQLITE_PATH = DB_URL.removeprefix("sqlite:///") if USE_SQLITE else None
@@ -40,14 +26,10 @@ SQLITE_PATH = DB_URL.removeprefix("sqlite:///") if USE_SQLITE else None
 sns.set_theme(style="whitegrid")
 
 
-# ── Load data ─────────────────────────────────────────────────────────────────
-
-
 async def load_data() -> pd.DataFrame:
     if USE_SQLITE:
         import aiosqlite
 
-        # Ensure parent directory exists (e.g. in CI containers where out/ may not exist).
         parent = os.path.dirname(SQLITE_PATH)
         if parent:
             os.makedirs(parent, exist_ok=True)
@@ -64,7 +46,6 @@ async def load_data() -> pd.DataFrame:
                 ) as cursor:
                     rows = await cursor.fetchall()
             except Exception as e:
-                # A fresh SQLite file may exist but not have schema initialized.
                 if "no such table" in str(e).lower():
                     return pd.DataFrame(
                         columns=[
@@ -88,384 +69,92 @@ async def load_data() -> pd.DataFrame:
                         ]
                     )
                 raise
-        return pd.DataFrame([dict(r) for r in rows])
+
+            cols = list(rows[0].keys())
+            return pd.DataFrame([dict(row) for row in rows], columns=cols)
 
     import asyncpg
 
-    conn = await asyncpg.connect(DB_URL)
-    rows = await conn.fetch(
-        """
-        SELECT trial_id, zip_condition, ad_url, ad_domain,
-               ad_network, measurement_site, source_type, intent_profile, query_topic, search_query,
-               ad_headline, ad_description, advertiser_name, landing_url, landing_domain,
-               inferred_topic, observed_at
-        FROM ad_observations ORDER BY observed_at
-        """
-    )
-    await conn.close()
+    pool = await asyncpg.create_pool(DB_URL, min_size=2, max_size=5)
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT trial_id, zip_condition, ad_url, ad_domain, "
+            "ad_network, measurement_site, source_type, intent_profile, query_topic, search_query, "
+            "ad_headline, ad_description, advertiser_name, landing_url, landing_domain, "
+            "inferred_topic, observed_at "
+            "FROM ad_observations ORDER BY observed_at"
+        )
+    await pool.close()
     return pd.DataFrame([dict(r) for r in rows])
-
-
-# ── Pre-processing ────────────────────────────────────────────────────────────
 
 
 def preprocess(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
-    # Treatment label — kept as a categorical string for multi-level models.
-    # is_rich is retained for backward compatibility with legacy 2-condition data.
-    df["is_rich"] = (df["zip_condition"] == "rich_zip").astype(int)
-    # Binary outcome: 1 observation = 1 ad shown (already filtered upstream)
-    df["ad_shown"] = 1
-    # Trial-level counts
     df["ad_domain"] = df["ad_domain"].fillna("unknown")
-    for col in [
-        "ad_url",
-        "source_type",
-        "intent_profile",
-        "query_topic",
-        "search_query",
-        "ad_headline",
-        "ad_description",
-        "advertiser_name",
-        "landing_url",
-        "landing_domain",
-        "inferred_topic",
-        "page_title",
-        "page_url",
-        "screenshot_path",
-        "dom_snippet",
-    ]:
-        if col not in df:
-            df[col] = ""
-        else:
-            df[col] = df[col].fillna("")
-
-    df["request_role"] = df.apply(classify_request_role, axis=1)
-    df["platform_class"] = df.apply(classify_platform_class, axis=1)
-    df["publisher_context"] = (
-        df["measurement_site"].map(infer_publisher_context).fillna("general news")
+    df["ad_network"] = df["ad_network"].fillna("unknown")
+    df["source_type"] = df.get("source_type", pd.Series([None] * len(df))).fillna(
+        "page_load"
     )
-    df["clean_topic_label"] = df.apply(build_clean_topic_label, axis=1)
-    df["final_taxonomy"] = df.apply(classify_final_taxonomy, axis=1)
+    df["intent_profile"] = df.get("intent_profile", pd.Series([None] * len(df))).fillna(
+        "none"
+    )
+    df["query_topic"] = df.get("query_topic", pd.Series([None] * len(df))).fillna(
+        "none"
+    )
+    df["search_query"] = df.get("search_query", pd.Series([None] * len(df))).fillna("")
+    df["inferred_topic"] = df.get("inferred_topic", pd.Series([None] * len(df))).fillna(
+        "uncategorized"
+    )
+
+    if "ad_headline" in df.columns:
+        df["ad_headline"] = df["ad_headline"].fillna("")
+    if "ad_description" in df.columns:
+        df["ad_description"] = df["ad_description"].fillna("")
+
+    df["clean_topic_label"] = "uncategorized"
+    uncategorized = (
+        df["inferred_topic"]
+        .str.lower()
+        .str.contains("uncategorized|unknown|other", na=False)
+    )
+    df.loc[uncategorized, "clean_topic_label"] = "uncategorized"
+
+    if "landing_domain" in df.columns:
+        df.loc[
+            df["landing_domain"].str.contains("google", na=False), "clean_topic_label"
+        ] = "google_search"
+        df.loc[
+            df["landing_domain"].str.contains("youtube", na=False), "clean_topic_label"
+        ] = "youtube"
+
+    df["platform_class"] = "other"
+    df.loc[df["ad_network"].str.contains("google", na=False), "platform_class"] = (
+        "google"
+    )
+    df.loc[df["ad_network"].str.contains("amazon", na=False), "platform_class"] = (
+        "amazon"
+    )
+    df.loc[df["ad_network"].str.contains("criteo", na=False), "platform_class"] = (
+        "criteo"
+    )
+    df.loc[df["ad_network"].str.contains("taboola", na=False), "platform_class"] = (
+        "taboola"
+    )
+    df.loc[df["ad_network"].str.contains("outbrain", na=False), "platform_class"] = (
+        "outbrain"
+    )
+
+    df["request_role"] = "other"
+    df.loc[df["source_type"] == "google_search_ad", "request_role"] = "search_ad"
+    df.loc[df["source_type"].isin(["page_load", "iframe", "xhr"]), "request_role"] = (
+        "display_ad"
+    )
+
+    df["final_taxonomy"] = df["clean_topic_label"]
+    df.loc[df["platform_class"] == "google", "final_taxonomy"] = "google_search"
+    df.loc[df["platform_class"] == "amazon", "final_taxonomy"] = "amazon_ads"
+
     return df
-
-
-def infer_publisher_context(site: str) -> str:
-    site = (site or "").lower()
-    mapping = {
-        "cnn.com": "news & politics",
-        "forbes.com": "business & investing",
-        "nytimes.com": "news & culture",
-        "huffpost.com": "news & lifestyle",
-        "usatoday.com": "general news",
-        "google_search": "search results",
-    }
-    for key, label in mapping.items():
-        if key in site:
-            return label
-    return "general news"
-
-
-def classify_request_role(row: pd.Series) -> str:
-    url = (row.get("ad_url") or "").lower()
-    domain = (row.get("ad_domain") or "").lower()
-
-    rules = [
-        (("beacon.js", "/b?", "scorecardresearch"), "analytics beacon"),
-        (("gpt.js", "adsbygoogle.js"), "ad loader script"),
-        (("getconfig/sodar", "sodar"), "viewability / anti-fraud config"),
-        (
-            ("cookie/put", "usersync", "obusersync", "cm.g.doubleclick.net"),
-            "identity sync",
-        ),
-        (("obpixelframe", "pixel", "match.adsrvr.org"), "tracking pixel / retargeting"),
-        (("pubads.g.doubleclick.net",), "ad serving request"),
-        (
-            (
-                "appnexus",
-                "adnxs",
-                "openx",
-                "pubmatic",
-                "rubiconproject",
-                "criteo",
-                "amazon-adsystem",
-            ),
-            "programmatic exchange call",
-        ),
-        (
-            ("outbrain.js", "widgets.outbrain.com", "nanoWidget", "module/"),
-            "native recommendation widget",
-        ),
-    ]
-
-    for needles, label in rules:
-        if any(n.lower() in url or n.lower() in domain for n in needles):
-            return label
-    return "unclassified ad-tech request"
-
-
-def classify_platform_class(row: pd.Series) -> str:
-    domain = (row.get("ad_domain") or "").lower()
-    role = row.get("request_role", "")
-    if "outbrain" in domain:
-        return "native recommendation network"
-    if any(
-        x in domain for x in ["doubleclick", "googlesyndication", "googleadservices"]
-    ):
-        return "google display stack"
-    if any(
-        x in domain
-        for x in [
-            "adnxs",
-            "appnexus",
-            "openx",
-            "pubmatic",
-            "rubiconproject",
-            "criteo",
-            "adsrvr",
-            "amazon-adsystem",
-        ]
-    ):
-        return "programmatic ad exchange"
-    if "scorecardresearch" in domain:
-        return "audience measurement"
-    if "identity" in role:
-        return "identity / sync layer"
-    return "other ad-tech infrastructure"
-
-
-def build_clean_topic_label(row: pd.Series) -> str:
-    inferred = (row.get("inferred_topic") or "").strip()
-    if inferred:
-        return inferred
-
-    platform = row.get("platform_class", "")
-    role = row.get("request_role", "")
-    context = row.get("publisher_context", "")
-
-    if platform == "native recommendation network":
-        return f"native recommendations on {context}"
-    if platform == "google display stack":
-        if role == "ad serving request":
-            return f"google display ad serving on {context}"
-        if role == "ad loader script":
-            return "google display loader"
-        return "google display infrastructure"
-    if platform == "programmatic ad exchange":
-        return f"programmatic display on {context}"
-    if platform == "audience measurement":
-        return "audience measurement / analytics"
-    if role == "identity sync":
-        return "identity sync / cross-site matching"
-    if role == "tracking pixel / retargeting":
-        return "tracking / retargeting pixel"
-    return f"ad-tech infrastructure on {context}"
-
-
-def classify_final_taxonomy(row: pd.Series) -> str:
-    role = (row.get("request_role") or "").lower()
-    platform = (row.get("platform_class") or "").lower()
-
-    if "identity" in role or "identity" in platform:
-        return "identity sync"
-    if "measurement" in role or "measurement" in platform or "analytics beacon" in role:
-        return "measurement"
-    if "retargeting" in role or "tracking pixel" in role:
-        return "retargeting"
-    if "native recommendation" in platform or "native recommendation widget" in role:
-        return "native ad"
-    return "display ad"
-
-
-# ── Model 1 – Logistic regression: ZIP → ad exposure ─────────────────────────
-
-
-def test_volume_hypothesis(df: pd.DataFrame) -> None:
-    """
-    Volume is held approximately constant by design.
-    This model is a diagnostic/balance check, not the primary outcome.
-
-    Poisson GLM: ad_count ~ C(zip_condition).
-    Tests H0-volume: ad volume is independent of proxy identity.
-    """
-    # Aggregate: one row per (trial × identity)
-    agg = (
-        df.groupby(["trial_id", "zip_condition"])["ad_shown"]
-        .sum()
-        .reset_index(name="ad_count")
-    )
-    agg["exposed"] = (agg["ad_count"] > 0).astype(int)
-
-    identities = sorted(agg["zip_condition"].unique())
-    ref = identities[0]  # alphabetical reference level
-
-    print("\n" + "=" * 60)
-    print("MODEL 1 — Volume (Balance Check)")
-    print(f"          Reference level: {ref}")
-    print("=" * 60)
-
-    # Poisson fallback when exposure is constant (nearly always the case).
-    if agg["exposed"].nunique() < 2:
-        print("[note] Exposure is constant; using Poisson GLM on ad counts.")
-        model = smf.glm(
-            f'ad_count ~ C(zip_condition, Treatment(reference="{ref}"))',
-            data=agg,
-            family=sm.families.Poisson(),
-        ).fit()
-    else:
-        model = smf.glm(
-            f'ad_count ~ C(zip_condition, Treatment(reference="{ref}"))',
-            data=agg,
-            family=sm.families.Poisson(),
-        ).fit()
-
-    print(model.summary2())
-
-    import math
-
-    print("\nRate ratios vs reference identity:")
-    any_sig = False
-    for param, coef in model.params.items():
-        if "zip_condition" in param:
-            pval = model.pvalues[param]
-            rr = math.exp(coef)
-            sig = " ← p<0.05" if pval < 0.05 else ""
-            print(f"  {param:55s}  β={coef:+.4f}  RR={rr:.4f}  p={pval:.4f}{sig}")
-            if pval < 0.05:
-                any_sig = True
-
-    if any_sig:
-        print("→ At least one identity level significantly predicts ad volume (α=0.05)")
-    else:
-        print("→ No significant identity effect detected (α=0.05)")
-
-
-# ── Model 2 – Chi-square: ad domain × ZIP condition ──────────────────────────
-# Tests H0-domain: ad-domain distribution is independent of proxy identity.
-
-
-def chi_square_test(df: pd.DataFrame) -> None:
-    top_domains = df["ad_domain"].value_counts().head(20).index
-    sub = df[df["ad_domain"].isin(top_domains)]
-
-    contingency = pd.crosstab(sub["zip_condition"], sub["ad_domain"])
-    chi2, p, dof, _ = chi2_contingency(contingency)
-
-    print("\n" + "=" * 60)
-    print("MODEL 2 — Chi-square: ad domain distribution × ZIP condition")
-    print("=" * 60)
-    print(f"χ²({dof}) = {chi2:.4f},  p = {p:.6f}")
-    if p < 0.05:
-        print("→ Ad domain distribution differs significantly across ZIP conditions")
-    else:
-        print("→ No significant difference in domain distribution")
-
-
-# ── Model 3 – Domain breakdown ────────────────────────────────────────────────
-
-
-def domain_breakdown(df: pd.DataFrame, output_dir: str) -> None:
-    top_domains = df["ad_domain"].value_counts().head(20).index
-    sub = df[df["ad_domain"].isin(top_domains)]
-
-    pivot = (
-        sub.groupby(["ad_domain", "zip_condition"])["ad_shown"]
-        .sum()
-        .unstack(fill_value=0)
-    )
-
-    # Normalise to proportions per condition
-    pivot_pct = pivot.div(pivot.sum(axis=0), axis=1) * 100
-
-    print("\n" + "=" * 60)
-    print("MODEL 3 — Ad domain share by proxy identity (%)")
-    print("=" * 60)
-    print(pivot_pct.round(2).to_string())
-
-    # Sort by total share (sum across all identities)
-    sort_col = pivot_pct.columns[0]
-    palette = ["#d7191c", "#2b83ba", "#1a9641", "#fdae61", "#984ea3"]
-
-    # Plot
-    fig, ax = plt.subplots(figsize=(12, 6))
-    pivot_pct.sort_values(sort_col, ascending=False).plot(
-        kind="barh", ax=ax, color=palette[: len(pivot_pct.columns)]
-    )
-    ax.set_xlabel("Share of ad impressions (%)")
-    ax.set_title("Ad domain distribution by proxy identity")
-    ax.legend(title="Proxy identity")
-    plt.tight_layout()
-    path = os.path.join(output_dir, "domain_distribution.png")
-    fig.savefig(path, dpi=150)
-    print(f"\n[plot] saved → {path}")
-    plt.close(fig)
-
-
-# ── Model 4 – Odds ratio per domain ──────────────────────────────────────────
-
-
-def per_domain_odds(df: pd.DataFrame, output_dir: str) -> None:
-    """
-    For each top domain, fit a Poisson GLM: domain_share ~ C(zip_condition).
-    Report the coefficient (log rate-ratio) for each non-reference identity.
-    Falls back to logistic for binary data; uses Poisson for multi-level.
-    """
-    identities = sorted(df["zip_condition"].unique())
-    ref = identities[0]
-    multi = len(identities) > 2
-
-    records = []
-    top_domains = df["ad_domain"].value_counts().head(20).index
-
-    for domain in top_domains:
-        sub = df.copy()
-        sub["target"] = (sub["ad_domain"] == domain).astype(int)
-        if sub["target"].sum() < 10:
-            continue
-        try:
-            formula = f'target ~ C(zip_condition, Treatment(reference="{ref}"))'
-            m = smf.logit(formula, data=sub).fit(disp=False)
-            # Report the largest-magnitude coefficient and its p-value
-            params = {k: v for k, v in m.params.items() if "zip_condition" in k}
-            if not params:
-                continue
-            # Pick the param with the highest absolute effect
-            best_param = max(params, key=lambda k: abs(params[k]))
-            odds = params[best_param]
-            p = m.pvalues[best_param]
-            label = best_param.split("T.")[-1].rstrip("]")
-            records.append(
-                {"domain": domain, "identity": label, "log_odds": odds, "p_value": p}
-            )
-        except Exception:
-            pass
-
-    if not records:
-        return
-
-    result = pd.DataFrame(records).sort_values("log_odds")
-    print("\n" + "=" * 60)
-    print(f"MODEL 4 — Per-domain log-odds vs reference identity ({ref})")
-    print("=" * 60)
-    print(result.to_string(index=False))
-
-    # Forest plot
-    fig, ax = plt.subplots(figsize=(10, max(4, len(result) * 0.4)))
-    colors = ["#d7191c" if p < 0.05 else "#aaaaaa" for p in result["p_value"]]
-    ax.barh(result["domain"], result["log_odds"], color=colors)
-    ax.axvline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_xlabel(f"Log-odds vs {ref}")
-    ax.set_title(
-        f"Per-domain targeting differences by proxy identity\n(red = significant at α=0.05)"
-    )
-    plt.tight_layout()
-    path = os.path.join(output_dir, "per_domain_odds.png")
-    fig.savefig(path, dpi=150)
-    print(f"[plot] saved → {path}")
-    plt.close(fig)
-
-
-# ── Summary stats ─────────────────────────────────────────────────────────────
 
 
 def summary_stats(df: pd.DataFrame) -> None:
@@ -477,42 +166,48 @@ def summary_stats(df: pd.DataFrame) -> None:
     print(f"Proxy identities   : {df['zip_condition'].value_counts().to_dict()}")
     print(f"Unique ad domains  : {df['ad_domain'].nunique()}")
     print(f"Unique ad networks : {df['ad_network'].nunique()}")
-    if "source_type" in df:
+
+    if "source_type" in df.columns:
         print(f"Source types       : {df['source_type'].value_counts().to_dict()}")
-    if "intent_profile" in df:
+    if "intent_profile" in df.columns:
         print(f"Intent profiles    : {df['intent_profile'].value_counts().to_dict()}")
 
-    # Diversity metrics for the whole dataset
-    import math
-    vc = df["ad_domain"].value_counts(normalize=True)
-    entropy = -sum(p * math.log(p) for p in vc if p > 0)
-    hhi = sum(p ** 2 for p in vc)
+    domain_counts = df["ad_domain"].value_counts()
+    domain_probs = domain_counts / domain_counts.sum()
+    entropy = -(domain_probs * np.log(domain_probs + 1e-10)).sum()
+    hhi = (domain_probs**2).sum()
+
     print(f"Domain entropy (Shannon): {entropy:.4f}")
     print(f"Domain HHI (Herfindahl): {hhi:.4f}")
-    print(f"Unique domains per observation: {len(vc) / len(df):.4f}")
+    print(f"Unique domains per observation: {len(domain_counts) / len(df):.4f}")
 
 
 def treatment_cell_summary(df: pd.DataFrame) -> None:
     print("\n" + "=" * 60)
     print("TREATMENT CELLS  (intent profile × proxy identity)")
     print("=" * 60)
-    cell = df.groupby(["intent_profile", "zip_condition"]).size().unstack(fill_value=0)
+
+    if "intent_profile" in df.columns:
+        cell = pd.crosstab(df["intent_profile"], df["zip_condition"])
+    else:
+        cell = pd.crosstab(df["zip_condition"], df["zip_condition"])
+
     print(cell.to_string())
 
-    print("\nClean labels by treatment cell (top 12):")
-    breakdown = (
-        df.groupby(["intent_profile", "zip_condition", "clean_topic_label"])
-        .size()
-        .reset_index(name="n")
-        .sort_values(
-            ["intent_profile", "zip_condition", "n"], ascending=[True, True, False]
-        )
-    )
-    for (intent, zip_condition), sub in breakdown.groupby(
-        ["intent_profile", "zip_condition"]
-    ):
-        print(f"\n[{intent} × {zip_condition}]")
-        print(sub.head(12)[["clean_topic_label", "n"]].to_string(index=False))
+    if "inferred_topic" in df.columns and "intent_profile" in df.columns:
+        print("\nClean labels by treatment cell (top 12):")
+        for intent in df["intent_profile"].unique():
+            for zip_condition in df["zip_condition"].unique():
+                sub = df[
+                    (df["intent_profile"] == intent)
+                    & (df["zip_condition"] == zip_condition)
+                ]
+                if len(sub) == 0:
+                    continue
+                vc = sub["inferred_topic"].value_counts().head(12)
+                sub2 = pd.DataFrame({"clean_topic_label": vc.index, "n": vc.values})
+                print(f"\n[{intent} × {zip_condition}]")
+                print(sub2.head(12)[["clean_topic_label", "n"]].to_string(index=False))
 
 
 def final_taxonomy_summary(df: pd.DataFrame, output_dir: str) -> None:
@@ -521,111 +216,226 @@ def final_taxonomy_summary(df: pd.DataFrame, output_dir: str) -> None:
     print("=" * 60)
     print(df["final_taxonomy"].value_counts().to_string())
 
-    by_cell = (
-        df.groupby(["intent_profile", "zip_condition", "final_taxonomy"])
-        .size()
-        .reset_index(name="n")
-    )
+    if "intent_profile" in df.columns:
+        print("\nBy ZIP × intent_profile:")
+        table = pd.crosstab(
+            [df["zip_condition"], df["intent_profile"]], df["final_taxonomy"]
+        )
+        print(table.to_string())
 
-    print("\nBy ZIP × intent_profile:")
-    table = by_cell.pivot_table(
-        index=["intent_profile", "zip_condition"],
-        columns="final_taxonomy",
-        values="n",
-        fill_value=0,
-    )
-    print(table.to_string())
-
-    csv_path = os.path.join(output_dir, "final_taxonomy_summary.csv")
-    table.reset_index().to_csv(csv_path, index=False)
-    print(f"\n[analysis] Final taxonomy summary saved → {csv_path}")
+    csv_path = os.path.join(output_dir, "final_taxonomy.csv")
+    if "intent_profile" in df.columns:
+        out_df = pd.crosstab(
+            [df["zip_condition"], df["intent_profile"]], df["final_taxonomy"]
+        )
+    else:
+        out_df = pd.crosstab(df["zip_condition"], df["final_taxonomy"])
+    out_df.to_csv(csv_path)
+    log_result(f"[analysis] Final taxonomy summary saved → {csv_path}")
 
 
 def cell_comparison_plot(df: pd.DataFrame, output_dir: str) -> None:
-    plot_df = (
-        df.groupby(["intent_profile", "zip_condition", "final_taxonomy"])
-        .size()
-        .reset_index(name="n")
-    )
-    plot_df["cell"] = plot_df["intent_profile"] + " × " + plot_df["zip_condition"]
+    if "intent_profile" not in df.columns:
+        return
 
-    pivot = plot_df.pivot_table(
-        index="cell",
-        columns="final_taxonomy",
-        values="n",
-        fill_value=0,
+    pivot = pd.crosstab(
+        [df["intent_profile"], df["zip_condition"]], df["platform_class"]
     )
-
     pivot_pct = pivot.div(pivot.sum(axis=1), axis=0) * 100
-    # Build dynamic ordering: group by intent profile, then sort by identity label
-    ordered_cells = sorted(
-        pivot_pct.index.tolist(), key=lambda c: (c.split(" × ")[0], c.split(" × ")[-1])
-    )
-    pivot_pct = pivot_pct.reindex([c for c in ordered_cells if c in pivot_pct.index])
 
-    fig, ax = plt.subplots(figsize=(12, 6))
-    pivot_pct.plot(
-        kind="bar",
-        stacked=True,
-        ax=ax,
-        color=["#4daf4a", "#377eb8", "#e41a1c", "#984ea3", "#ff7f00"],
-    )
-    ax.set_ylabel("Share of observations (%)")
-    ax.set_xlabel("Treatment cell (intent profile × proxy identity)")
-    ax.set_title("Proxy identity × intent_profile comparison by final taxonomy")
-    ax.legend(title="Final taxonomy", bbox_to_anchor=(1.02, 1), loc="upper left")
-    plt.xticks(rotation=30, ha="right")
+    plt.figure(figsize=(10, 6))
+    pivot_pct.plot(kind="bar", stacked=True, ax=plt.gca())
+    plt.ylabel("Percent of ads")
+    plt.title("Platform class mix by intent profile × proxy identity")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
     plt.tight_layout()
-    path = os.path.join(output_dir, "cell_comparison_taxonomy.png")
-    fig.savefig(path, dpi=150)
-    print(f"[plot] saved → {path}")
-    plt.close(fig)
+
+    path = os.path.join(output_dir, "cell_comparison_platform_class.png")
+    plt.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close()
+    log_result(f"[plot] saved → {path}")
+
+
+def chi_square_test(df: pd.DataFrame) -> None:
+    contingency = pd.crosstab(df["zip_condition"], df["ad_domain"])
+    chi2, p, dof, _ = chi2_contingency(contingency)
+
+    print("\n" + "=" * 60)
+    print("MODEL 2 — Chi-square: ad domain distribution × ZIP condition")
+    print("=" * 60)
+    print(f"χ²({dof}) = {chi2:.4f},  p = {p:.6f}")
+
+    if p < 0.05:
+        log_result(
+            "→ Ad domain distribution differs significantly across ZIP conditions"
+        )
+    else:
+        log_result("→ No significant difference in domain distribution")
+
+
+def domain_breakdown(df: pd.DataFrame, output_dir: str) -> None:
+    pivot = pd.crosstab(df["zip_condition"], df["ad_domain"])
+    pivot_pct = pivot.div(pivot.sum(axis=1), axis=0) * 100
+
+    print("\n" + "=" * 60)
+    print("MODEL 3 — Ad domain share by proxy identity (%)")
+    print("=" * 60)
+    print(pivot_pct.round(2).to_string())
+
+    top_domains = pivot.columns[:10]
+    pivot_top = pivot[top_domains]
+
+    plt.figure(figsize=(12, 6))
+    pivot_top.plot(kind="bar", ax=plt.gca())
+    plt.ylabel("Count of ads")
+    plt.title("Top ad domains by proxy identity")
+    plt.xlabel("Proxy identity (ZIP condition)")
+    plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+    plt.tight_layout()
+
+    path = os.path.join(output_dir, "domain_breakdown_top10.png")
+    plt.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close()
+    log_result(f"[plot] saved → {path}")
+
+
+def per_domain_odds(df: pd.DataFrame, output_dir: str) -> None:
+    ref = df["zip_condition"].mode().iloc[0]
+
+    results = []
+    for domain in df["ad_domain"].unique()[:20]:
+        sub = df[df["ad_domain"].isin([domain, ref])]
+        sub = sub.copy()
+        sub["y"] = (sub["ad_domain"] == domain).astype(int)
+        sub["zip_ref"] = sub["zip_condition"].apply(
+            lambda x: "other" if x != ref else ref
+        )
+
+        try:
+            model = smf.logit("y ~ zip_ref", data=sub).fit(disp=0)
+            rr = model.params["zip_ref[T.other]"]
+            pval = model.pvalues["zip_ref[T.other]"]
+            results.append({"domain": domain, "log_odds": rr, "p_value": pval})
+        except Exception:
+            continue
+
+    if not results:
+        return
+
+    result = pd.DataFrame(results)
+    result = result.sort_values("p_value")
+
+    print("\n" + "=" * 60)
+    print("MODEL 4 — Per-domain log-odds vs reference identity")
+    print("=" * 60)
+    print(result.to_string(index=False))
+
+    plt.figure(figsize=(10, 6))
+    top = result.head(10)
+    plt.barh(top["domain"], top["log_odds"])
+    plt.xlabel("Log odds ratio")
+    plt.title(f"Top domains by identity effect (ref={ref})")
+    plt.tight_layout()
+
+    path = os.path.join(output_dir, "per_domain_odds.png")
+    plt.savefig(path, dpi=200, bbox_inches="tight")
+    plt.close()
+    log_result(f"[plot] saved → {path}")
+
+
+def test_volume_hypothesis(df: pd.DataFrame) -> None:
+    ref = df["zip_condition"].mode().iloc[0]
+
+    # Aggregate: count ads per trial
+    trial_counts = (
+        df.groupby(["trial_id", "zip_condition", "intent_profile"])
+        .size()
+        .reset_index(name="ad_count")
+    )
+
+    print("\n" + "=" * 60)
+    print("MODEL 1 — Volume (Balance Check)")
+    print(f"          Reference level: {ref}")
+    print("=" * 60)
+
+    log_result("[note] Exposure is constant; using Poisson GLM on ad counts per trial.")
+
+    # Fit Poisson GLM: ad_count ~ zip_condition
+    model = smf.glm(
+        "ad_count ~ zip_condition", data=trial_counts, family=sm.families.Poisson()
+    ).fit()
+
+    print(model.summary2())
+
+    print("\nRate ratios vs reference identity:")
+    for param in model.params.index:
+        if param == "Intercept":
+            continue
+        coef = model.params[param]
+        rr = np.exp(coef)
+        pval = model.pvalues[param]
+        sig = " *" if pval < 0.05 else ""
+        print(f"  {param:55s}  β={coef:+.4f}  RR={rr:.4f}  p={pval:.4f}{sig}")
+
+    if any(model.pvalues.drop("Intercept") < 0.05):
+        log_result(
+            "→ At least one identity level significantly predicts ad volume (α=0.05)"
+        )
+    else:
+        log_result("→ No significant identity effect detected (α=0.05)")
 
 
 def google_search_summary(df: pd.DataFrame, output_dir: str) -> None:
-    sub = df[df["source_type"] == "google_search_ad"].copy()
-    if sub.empty:
-        print("\n[analysis] no Google search ads found in this dataset.")
+    if "source_type" not in df.columns:
+        log_result("\n[analysis] no Google search ads found in this dataset.")
+        return
+
+    google_ads = df[df["source_type"] == "google_search_ad"].copy()
+    if google_ads.empty:
+        log_result("\n[analysis] no Google search ads found in this dataset.")
         return
 
     print("\n" + "=" * 60)
     print("GOOGLE SEARCH ADS — Topic summary")
     print("=" * 60)
     print(
-        sub.groupby(["query_topic", "zip_condition"])
-        .size()
-        .unstack(fill_value=0)
-        .to_string()
+        f"Total Google search ads: {len(google_ads)} "
+        f"({len(google_ads) / len(df) * 100:.1f}% of all observations)"
     )
 
     print("\nTop inferred ad topics:")
     print(
-        sub["inferred_topic"].replace("", "unknown").value_counts().head(15).to_string()
+        google_ads["inferred_topic"]
+        .value_counts()
+        .head(10)
+        .to_frame(name="count")
+        .to_string()
     )
 
     print("\nSample Google ads:")
-    sample = sub[
-        [
-            "zip_condition",
-            "query_topic",
-            "search_query",
-            "advertiser_name",
-            "ad_headline",
-            "landing_domain",
-            "inferred_topic",
-        ]
-    ].head(20)
-    print(sample.to_string(index=False))
+    sample = google_ads.sample(min(10, len(google_ads)), random_state=42)
+    cols = ["ad_headline", "ad_description", "landing_domain", "inferred_topic"]
+    print(sample[cols].to_string(index=False))
 
     csv_path = os.path.join(output_dir, "google_search_ads.csv")
-    sub.to_csv(csv_path, index=False)
-    print(f"\n[analysis] Google ads saved → {csv_path}")
+    google_ads.to_csv(csv_path, index=False)
+    log_result(f"\n[analysis] Google ads saved → {csv_path}")
 
 
 def inferred_topic_summary(df: pd.DataFrame, output_dir: str) -> None:
-    sub = df[df["clean_topic_label"] != ""].copy()
+    if "inferred_topic" not in df.columns:
+        log_result("\n[analysis] no inferred ad topics found in this dataset.")
+        return
+
+    sub = df.copy()
+    sub = sub[
+        ~sub["inferred_topic"]
+        .str.lower()
+        .str.contains("uncategorized|unknown|other", na=False)
+    ]
+
     if sub.empty:
-        print("\n[analysis] no inferred ad topics found in this dataset.")
+        log_result("\n[analysis] no inferred ad topics found in this dataset.")
         return
 
     print("\n" + "=" * 60)
@@ -633,13 +443,8 @@ def inferred_topic_summary(df: pd.DataFrame, output_dir: str) -> None:
     print("=" * 60)
     print(sub["clean_topic_label"].value_counts().head(20).to_string())
 
-    by_zip = (
-        sub.groupby(["inferred_topic", "zip_condition"]).size().unstack(fill_value=0)
-    )
     print("\nBy ZIP condition:")
-    by_zip = (
-        sub.groupby(["clean_topic_label", "zip_condition"]).size().unstack(fill_value=0)
-    )
+    by_zip = pd.crosstab(df["zip_condition"], df["clean_topic_label"])
     print(by_zip.to_string())
 
     print("\nPlatform classes:")
@@ -650,42 +455,277 @@ def inferred_topic_summary(df: pd.DataFrame, output_dir: str) -> None:
 
     csv_path = os.path.join(output_dir, "classified_ads.csv")
     sub.to_csv(csv_path, index=False)
-    print(f"\n[analysis] Classified ads saved → {csv_path}")
+    log_result(f"\n[analysis] Classified ads saved → {csv_path}")
 
 
-# ── Entry point ───────────────────────────────────────────────────────────────
+def personalization_analysis(df: pd.DataFrame, output_dir: str) -> None:
+    if "intent_profile" not in df.columns:
+        return
+
+    print("\n" + "=" * 60)
+    print("PERSONALIZATION — Intent Profile × Proxy Identity Stratification")
+    print("=" * 60)
+    log_result(
+        "Testing whether identity effects vary across intent profiles "
+        "(interaction / moderation analysis)"
+    )
+
+    cell = pd.crosstab(df["intent_profile"], df["zip_condition"])
+
+    for intent in df["intent_profile"].unique():
+        sub = df[df["intent_profile"] == intent]
+        if len(sub) < 10:
+            log_result(f"[{intent}] insufficient data ({len(sub)} rows)")
+            continue
+
+        contingency = pd.crosstab(sub["zip_condition"], sub["ad_domain"])
+        try:
+            chi2, p, dof, _ = chi2_contingency(contingency)
+            sig = " *" if p < 0.05 else ""
+            log_result(f"[{intent}] χ²({dof}) = {chi2:.2f}, p = {p:.4f}{sig}")
+        except Exception as e:
+            log_result(f"[{intent}] chi-square failed: {e}")
+
+    print("\nFull intent × identity cell counts (reproduced for context):")
+    print(cell.to_string())
+
+    strat_path = os.path.join(output_dir, "personalization_stratification.csv")
+    cell.to_csv(strat_path)
+    log_result(f"\n[analysis] Personalization stratification saved → {strat_path}")
+
+    if "ad_domain" in df.columns:
+        log_result("\n--- Interaction logistic model (personalization) ---")
+        log_result(
+            "Fitting: ad_domain ~ zip_condition * intent_profile "
+            "(logistic regression with interaction terms)"
+        )
+
+        sub = df[
+            df["ad_domain"].isin(df["ad_domain"].value_counts().head(5).index)
+        ].copy()
+        sub = sub.copy()
+        sub["y"] = sub["ad_domain"].astype("category").cat.codes
+
+        try:
+            model = smf.glm(
+                "y ~ zip_condition * intent_profile",
+                data=sub,
+                family=sm.families.Binomial(),
+            ).fit()
+
+            int_df = pd.DataFrame(
+                {
+                    "param": model.params.index,
+                    "coef": model.params.values,
+                    "p_value": model.pvalues.values,
+                }
+            )
+            int_df = int_df[int_df["param"].str.contains(":")]
+
+            if not int_df.empty:
+                print(int_df.head(10).to_string(index=False))
+
+                int_csv = os.path.join(output_dir, "personalization_interaction.csv")
+                int_df.to_csv(int_csv, index=False)
+                log_result(f"[analysis] Interaction model results saved → {int_csv}")
+            else:
+                log_result(
+                    "[personalization] No interaction terms found — "
+                    "identity effects appear consistent across intent profiles"
+                )
+        except Exception:
+            log_result(
+                "[personalization] Interaction model failed — insufficient data or separation"
+            )
 
 
-async def main(output_dir: str) -> None:
+def ranking_analysis(df: pd.DataFrame, output_dir: str) -> None:
+    print("\n" + "=" * 60)
+    print("RANKING — Temporal Order + Diversity Analysis")
+    print("=" * 60)
+    log_result("[note] No ad rank/position captured in ad_observations schema.")
+    log_result("       Using observed_at timestamp as proxy for order within trial.")
+    log_result(
+        "       Quartile-based ordering (Q1/Q2/Q3/Q4) within intent_profile blocks."
+    )
+    log_result("       Time delta features: seconds between consecutive ads.")
+
+    if "observed_at" not in df.columns or df["observed_at"].isna().all():
+        log_result(
+            "[ranking] No usable observed_at timestamps — skipping order analysis."
+        )
+        return
+
+    sub = df.copy()
+    sub = sub.dropna(subset=["observed_at"])
+    sub["observed_at"] = pd.to_datetime(sub["observed_at"])
+
+    # Compute within-block rank and quartile position
+    if "intent_profile" in sub.columns:
+        sub["within_block_rank"] = sub.groupby(["trial_id", "intent_profile"])[
+            "observed_at"
+        ].rank(method="first")
+        sub["block_size"] = sub.groupby(["trial_id", "intent_profile"])[
+            "within_block_rank"
+        ].transform("count")
+        sub["quartile_position"] = sub["within_block_rank"] / sub["block_size"]
+        sub["order_quartile"] = pd.qcut(
+            sub["quartile_position"],
+            q=4,
+            labels=["Q1", "Q2", "Q3", "Q4"],
+            duplicates="drop",
+        )
+    else:
+        sub["within_trial_rank"] = sub.groupby("trial_id")["observed_at"].rank(
+            method="first"
+        )
+        trial_size = sub.groupby("trial_id")["within_trial_rank"].transform("count")
+        sub["quartile_position"] = sub["within_trial_rank"] / trial_size
+        sub["order_quartile"] = pd.qcut(
+            sub["quartile_position"],
+            q=4,
+            labels=["Q1", "Q2", "Q3", "Q4"],
+            duplicates="drop",
+        )
+
+    # Time delta: seconds since previous ad in same block
+    if "intent_profile" in sub.columns:
+        sub["prev_observed_at"] = sub.groupby(["trial_id", "intent_profile"])[
+            "observed_at"
+        ].shift(1)
+    else:
+        sub["prev_observed_at"] = sub.groupby("trial_id")["observed_at"].shift(1)
+    sub["time_delta_sec"] = (
+        sub["observed_at"] - sub["prev_observed_at"]
+    ).dt.total_seconds()
+
+    # Position estimation stub (for future explicit rank capture)
+    sub["estimated_position"] = (
+        sub["within_block_rank"]
+        if "intent_profile" in sub.columns
+        else sub["within_trial_rank"]
+    )
+
+    # Diversity metrics per quartile (Shannon entropy of ad domains)
+    log_result("\n--- Diversity by quartile position ---")
+    entropy_by_quartile = []
+    for q in ["Q1", "Q2", "Q3", "Q4"]:
+        q_data = sub[sub["order_quartile"] == q]
+        if len(q_data) < 5:
+            continue
+        domain_counts = q_data["ad_domain"].value_counts()
+        probs = domain_counts / domain_counts.sum()
+        entropy = -np.sum(probs * np.log(probs + 1e-10))
+        entropy_by_quartile.append(
+            {
+                "quartile": q,
+                "n_ads": len(q_data),
+                "unique_domains": len(domain_counts),
+                "shannon_entropy": entropy,
+            }
+        )
+
+    if entropy_by_quartile:
+        entropy_df = pd.DataFrame(entropy_by_quartile)
+        print("\nQuartile | N Ads | Unique Domains | Shannon Entropy")
+        print("-" * 55)
+        for _, row in entropy_df.iterrows():
+            print(
+                f"{row['quartile']:8s} | {row['n_ads']:5d} | {row['unique_domains']:14d} | {row['shannon_entropy']:.4f}"
+            )
+
+        entropy_csv = os.path.join(output_dir, "ranking_diversity_by_quartile.csv")
+        entropy_df.to_csv(entropy_csv, index=False)
+        log_result(f"[analysis] Diversity metrics saved → {entropy_csv}")
+
+    # Time delta summary
+    valid_deltas = sub["time_delta_sec"].dropna()
+    if len(valid_deltas) > 0:
+        log_result(
+            f"\n[ranking] Time delta summary: mean={valid_deltas.mean():.2f}s, median={valid_deltas.median():.2f}s, std={valid_deltas.std():.2f}s"
+        )
+
+    # Contingency: quartile × identity
+    contingency_quartile = pd.crosstab(sub["order_quartile"], sub["zip_condition"])
+    print("\nQuartile × Proxy Identity contingency:")
+    print(contingency_quartile.to_string())
+
+    # Chi-square test for quartile distribution across identities
+    if contingency_quartile.shape[0] >= 2 and contingency_quartile.shape[1] >= 2:
+        try:
+            chi2, p, dof, _ = chi2_contingency(contingency_quartile)
+            sig = " *" if p < 0.05 else ""
+            log_result(f"\n[ranking] χ²({dof}) = {chi2:.2f}, p = {p:.4f}{sig}")
+            if p < 0.05:
+                log_result(
+                    "→ Quartile distribution differs significantly across proxy identities"
+                )
+            else:
+                log_result(
+                    "→ No significant difference in quartile distribution across identities"
+                )
+        except Exception as e:
+            log_result(f"[ranking] Chi-square test failed: {e}")
+
+    # Export full ranking data
+    rank_csv = os.path.join(output_dir, "ranking_order_proxy.csv")
+    export_cols = [
+        "trial_id",
+        "zip_condition",
+        "order_quartile",
+        "estimated_position",
+        "time_delta_sec",
+        "quartile_position",
+    ]
+    if "intent_profile" in sub.columns:
+        export_cols.insert(2, "intent_profile")
+    export_cols = [c for c in export_cols if c in sub.columns]
+    sub[export_cols].to_csv(rank_csv, index=False)
+    log_result(f"[analysis] Enhanced ranking data saved → {rank_csv}")
+
+    # Position estimation stub note
+    log_result(
+        "\n[note] estimated_position uses temporal rank; update when explicit ad rank capture is added."
+    )
+
+
+async def main(output_dir: str, hypothesis: str = "all") -> None:
     os.makedirs(output_dir, exist_ok=True)
 
-    print("[analysis] loading data …")
+    logger.info("loading data (hypothesis=%s)", hypothesis)
     df = await load_data()
 
     if df.empty:
-        print("[analysis] no data found. Run experiment.py first.")
+        logger.warning("no data found — run experiment.py first")
         return
 
     df = preprocess(df)
 
-    # ── Composition outcomes (primary) ────────────────────────────────
     summary_stats(df)
     treatment_cell_summary(df)
-    google_search_summary(df, output_dir)
-    inferred_topic_summary(df, output_dir)
-    final_taxonomy_summary(df, output_dir)
-    cell_comparison_plot(df, output_dir)
-    chi_square_test(df)           # H0-domain: composition
-    domain_breakdown(df, output_dir)
-    per_domain_odds(df, output_dir)
 
-    # ── Volume (balance check / secondary) ──────────────────────────
-    test_volume_hypothesis(df)  # H0-volume: diagnostic only
+    if hypothesis in ("all", "composition"):
+        google_search_summary(df, output_dir)
+        inferred_topic_summary(df, output_dir)
+        final_taxonomy_summary(df, output_dir)
+        cell_comparison_plot(df, output_dir)
+        chi_square_test(df)
+        domain_breakdown(df, output_dir)
+        per_domain_odds(df, output_dir)
 
-    # Save processed dataset
+    if hypothesis in ("all", "volume"):
+        test_volume_hypothesis(df)
+
+    if hypothesis in ("all", "personalization"):
+        personalization_analysis(df, output_dir)
+
+    if hypothesis in ("all", "ranking"):
+        ranking_analysis(df, output_dir)
+
     csv_path = os.path.join(output_dir, "observations.csv")
     df.to_csv(csv_path, index=False)
-    print(f"\n[analysis] dataset saved → {csv_path}")
+    log_result(f"\n[analysis] dataset saved → {csv_path}")
+    log_result(f"\n[analysis] hypothesis={hypothesis} run complete.")
 
 
 if __name__ == "__main__":
@@ -695,6 +735,12 @@ if __name__ == "__main__":
     parser.add_argument(
         "--output", default="out/results", help="Directory for plots and CSV"
     )
+    parser.add_argument(
+        "--hypothesis",
+        default="all",
+        choices=["composition", "volume", "ranking", "personalization", "all"],
+        help="Analysis type to run",
+    )
     args = parser.parse_args()
 
-    asyncio.run(main(args.output))
+    asyncio.run(main(args.output, args.hypothesis))

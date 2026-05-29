@@ -20,12 +20,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import json
 import os
 import sqlite3
 import sys
 from datetime import datetime
-from urllib.parse import urlparse
 
 import asyncpg
 
@@ -41,22 +39,58 @@ TABLES = ["trials", "page_visits", "ad_observations", "captures"]
 COLUMNS = {
     "trials": ["trial_id", "started_at", "trial_meta"],
     "page_visits": [
-        "id", "trial_id", "agent_id", "zip_condition", "intent_profile",
-        "phase", "measurement_site", "target_url", "final_url",
-        "status_code", "error_type", "error_text", "page_load_time_ms",
-        "cookie_count", "observed_at",
+        "id",
+        "trial_id",
+        "agent_id",
+        "zip_condition",
+        "intent_profile",
+        "phase",
+        "measurement_site",
+        "target_url",
+        "final_url",
+        "status_code",
+        "error_type",
+        "error_text",
+        "page_load_time_ms",
+        "cookie_count",
+        "observed_at",
     ],
     "ad_observations": [
-        "id", "trial_id", "agent_id", "zip_condition", "ad_url", "ad_domain",
-        "ad_network", "measurement_site", "source_type", "intent_profile",
-        "query_topic", "search_query", "ad_headline", "ad_description",
-        "advertiser_name", "landing_url", "landing_domain", "inferred_topic",
-        "page_title", "page_url", "screenshot_path", "dom_snippet",
-        "page_load_time_ms", "observed_at",
+        "id",
+        "trial_id",
+        "agent_id",
+        "zip_condition",
+        "ad_url",
+        "ad_domain",
+        "ad_network",
+        "measurement_site",
+        "source_type",
+        "intent_profile",
+        "query_topic",
+        "search_query",
+        "ad_headline",
+        "ad_description",
+        "advertiser_name",
+        "landing_url",
+        "landing_domain",
+        "inferred_topic",
+        "page_title",
+        "page_url",
+        "screenshot_path",
+        "dom_snippet",
+        "page_load_time_ms",
+        "observed_at",
     ],
     "captures": [
-        "id", "trial_id", "proxy_identity", "intent_profile", "site",
-        "file_path", "file_size_kb", "captured_at", "meta",
+        "id",
+        "trial_id",
+        "proxy_identity",
+        "intent_profile",
+        "site",
+        "file_path",
+        "file_size_kb",
+        "captured_at",
+        "meta",
     ],
 }
 
@@ -231,7 +265,9 @@ async def main(sqlite_path: str, pg_url: str) -> None:
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Migrate SQLite data to PostgreSQL")
-    parser.add_argument("--sqlite", default="out/ads.db", help="Path to SQLite database")
+    parser.add_argument(
+        "--sqlite", default="out/ads.db", help="Path to SQLite database"
+    )
     parser.add_argument(
         "--pg",
         default="postgresql://researcher:research@localhost:5432/ad_research",
