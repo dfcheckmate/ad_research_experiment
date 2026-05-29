@@ -2,7 +2,7 @@
 
 [![License: CC BY-NC 4.0](https://img.shields.io/badge/License-CC%20BY--NC%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc/4.0/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
-[![Tests](https://github.com/dfcheckmate/ad_research_experiment/actions/workflows/ci.yml/badge.svg)](https://github.com/dfcheckmate/ad_research_experiment/actions)
+[![Tests](https://github.com/dfcheckmate/ad_research_experiment/actions/workflows/ci.yml/badge.svg?branch=wip/release-prep)](https://github.com/dfcheckmate/ad_research_experiment/actions)
 
 **Educational research project exploring distributed measurement infrastructure for algorithmic auditing.**
 
